@@ -1,85 +1,59 @@
-import torch
-import sys 
-from pathlib import Path
-
+import sys
 sys.dont_write_bytecode = True
 
-from sklearn.datasets import make_classification
+from rich import print
+from pathlib import Path
 from bssnn.model.bssnn import BSSNN
-from bssnn.training.trainer import BSSNNTrainer
-from bssnn.utils.data import prepare_data
-from bssnn.utils.visualization import TrainingProgress
-from bssnn.explainability.explainer import BSSNNExplainer
+from bssnn.training.trainer import run_training
+from bssnn.explainability.explainer import run_explanations
+from bssnn.utils.data_loader import DataLoader
+from bssnn.config.config import BSSNNConfig
+from bssnn.visualization.visualization import setup_rich_logging
 
 
-def main():
-    # Generate synthetic data
-    X, y = make_classification(
-        n_samples=1000,
-        n_features=10,
-        n_informative=5,
-        n_redundant=2,
-        random_state=42
-    )
-    X = torch.tensor(X, dtype=torch.float32)
-    y = torch.tensor(y, dtype=torch.float32)
+def main(config_path: str):
+    """Main execution function."""
+    # Set up logging
+    setup_rich_logging()
     
-    # Prepare data
-    X_train, X_val, y_train, y_val = prepare_data(X, y)
+    # Load configuration
+    config = BSSNNConfig.from_yaml(config_path)
+    print("\n[bold cyan]Loading configuration...[/bold cyan]")
     
-    # Initialize model and trainer
-    model = BSSNN(input_size=X.shape[1], hidden_size=64)
-    trainer = BSSNNTrainer(model)
-    
-    # Define metrics to display during training
-    display_metrics = ['accuracy', 'f1_score', 'auc_roc', 'calibration_error']
-    
-    # Initialize progress tracker
-    num_epochs = 100
-    progress = TrainingProgress(
-        total_epochs=num_epochs,
-        display_metrics=display_metrics
+    # Load and prepare data
+    (X_train, X_val, y_train, y_val), n_features = DataLoader.load_and_prepare_data(
+        config.data
     )
     
-    # Training loop
-    for epoch in range(1, num_epochs + 1):
-        # Training step
-        train_loss = trainer.train_epoch(X_train, y_train)
-        val_loss, metrics = trainer.evaluate(X_val, y_val)
-        
-        # Update progress display
-        progress.update(epoch, val_loss, metrics)
+    # Update model configuration based on data
+    config.model.adapt_to_data(n_features)
     
-    # Model Explainability
-    # Create feature names for better visualization
-    feature_names = [f"Feature {i+1}" for i in range(X.shape[1])]
-    
-    # Initialize explainer
-    explainer = BSSNNExplainer(model, feature_names=feature_names)
-    
-    # Create output directory for visualizations
-    output_dir = Path("explanations")
-    output_dir.mkdir(exist_ok=True)
-    
-    # Generate comprehensive explanations
-    print("\nGenerating model explanations...")
-    explanations = explainer.explain(
-        X_train,
-        X_val,
-        save_dir=str(output_dir)
+    # Initialize model
+    model = BSSNN(
+        input_size=config.model.input_size,
+        hidden_size=config.model.hidden_size
     )
     
-    # Print feature importance scores
-    print("\nFeature Importance Scores:")
-    importance_scores = explanations['feature_importance']
-    for feature, importance in zip(feature_names, importance_scores):
-        print(f"{feature}: {importance:.3f}")
+    # Run training
+    run_training(config, model, X_train, X_val, y_train, y_val)
     
-    print(f"\nExplanation visualizations saved to: {output_dir}")
-    print("Generated files:")
-    print("- feature_dag.png: Directed Acyclic Graph of feature relationships")
-    print("- shap_feature_importance.png: SHAP-based feature importance")
-    print("- shap_summary_plot.png: SHAP summary visualization")
+    # Run explanations if enabled
+    if config.explainability.enabled:
+        explanations_dir = Path(config.output.base_dir) / config.output.explanations_dir
+        explanations_dir.mkdir(parents=True, exist_ok=True)
+        run_explanations(config, model, X_train, X_val, save_dir=str(explanations_dir))
+    
+    # Save final configuration
+    config_save_path = Path(config.output.base_dir) / "final_config.yaml"
+    config.save(str(config_save_path))
+    print(f"\n[green]Configuration saved to[/green] {config_save_path}")
+    
+    print("\n[bold green]Processing completed successfully![/bold green]")
+    
 
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) != 2:
+        print("[red]Please provide the path to the configuration file.[/red]")
+        sys.exit(1)
+    
+    main(sys.argv[1])

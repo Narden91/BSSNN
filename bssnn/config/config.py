@@ -2,14 +2,24 @@ import yaml
 from dataclasses import dataclass
 from typing import Optional, List, Dict, Any
 from pathlib import Path
+import logging
 
 
 @dataclass
 class ModelConfig:
     """Configuration for BSSNN model architecture."""
-    input_size: int
-    hidden_size: int = 64
+    input_size: Optional[int] = None  # Will be set automatically
+    hidden_size: Optional[int] = None  # Will be calculated based on input_size
     dropout_rate: float = 0.0
+
+    def adapt_to_data(self, n_features: int):
+        """Adapt model configuration to data dimensions."""
+        self.input_size = n_features
+        # Set hidden size to a reasonable default if not specified
+        if self.hidden_size is None:
+            # Use a heuristic for hidden size based on input size
+            self.hidden_size = max(64, min(256, 2 * n_features))
+            logging.info(f"Setting hidden size to {self.hidden_size} based on input dimension {n_features}")
 
 
 @dataclass
@@ -36,9 +46,29 @@ class DataConfig:
     
     # Synthetic data parameters (used if input_path is None)
     synthetic_samples: int = 1000
-    synthetic_features: int = 10
-    synthetic_informative: int = 5
-    synthetic_redundant: int = 2
+    synthetic_features: Optional[int] = None  # Will match model input_size if not specified
+    synthetic_informative: Optional[int] = None  # Will be calculated as 50% of features
+    synthetic_redundant: Optional[int] = None  # Will be calculated as 20% of features
+
+    def adapt_synthetic_params(self, n_features: Optional[int] = None):
+        """Adapt synthetic data parameters based on feature count."""
+        if n_features is not None:
+            self.synthetic_features = n_features
+        elif self.synthetic_features is None:
+            self.synthetic_features = 10  # Default if no other information available
+            
+        if self.synthetic_informative is None:
+            self.synthetic_informative = max(1, self.synthetic_features // 2)
+            
+        if self.synthetic_redundant is None:
+            self.synthetic_redundant = max(1, self.synthetic_features // 5)
+            
+        # Ensure parameters are consistent
+        total_special_features = self.synthetic_informative + self.synthetic_redundant
+        if total_special_features > self.synthetic_features:
+            ratio = self.synthetic_features / total_special_features
+            self.synthetic_informative = int(self.synthetic_informative * ratio)
+            self.synthetic_redundant = int(self.synthetic_redundant * ratio)
 
 
 @dataclass
