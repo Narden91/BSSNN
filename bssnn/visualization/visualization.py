@@ -191,3 +191,11 @@ class ExplainerProgress:
         if self._progress:
             self._progress.stop()
             self._progress = None
+    
+    def run_with_progress(self, steps, execute_step):
+        """Run steps with progress tracking."""
+        self.start(steps)
+        for step in steps:
+            execute_step(step)
+            self.update(step)
+        self.stop()
