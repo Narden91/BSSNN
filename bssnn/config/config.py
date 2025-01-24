@@ -17,9 +17,12 @@ class ValidationConfig:
 @dataclass
 class ModelConfig:
     """Configuration for BSSNN model architecture."""
-    input_size: Optional[int] = None  # Will be set automatically
-    hidden_size: Optional[int] = None  # Will be calculated based on input_size
-    dropout_rate: float = 0.0
+    input_size: Optional[int] = None
+    hidden_size: Optional[int] = None
+    dropout_rate: float = 0.2
+    weight_decay: float = 0.01  # L2 regularization parameter
+    early_stopping_patience: int = 10
+    early_stopping_min_delta: float = 1e-4
 
     def adapt_to_data(self, n_features: int):
         """Adapt model configuration to data dimensions."""

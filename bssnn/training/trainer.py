@@ -7,6 +7,7 @@ from rich import print
 
 from bssnn.config.config import BSSNNConfig
 from bssnn.explainability.explainer import run_explanations
+from bssnn.training.early_stopping import EarlyStopping
 from bssnn.utils.data_loader import DataLoader
 from ..model.bssnn import BSSNN
 from .metrics import calculate_metrics
@@ -21,28 +22,68 @@ class BSSNNTrainer:
         model: BSSNN,
         criterion: Optional[nn.Module] = None,
         optimizer: Optional[torch.optim.Optimizer] = None,
-        lr: float = 0.001
+        lr: float = 0.001,
+        weight_decay: float = 0.01,
+        early_stopping_patience: int = 10,
+        early_stopping_min_delta: float = 1e-4
     ):
         self.model = model
         self.criterion = criterion or nn.BCELoss()
-        self.optimizer = optimizer or optim.Adam(model.parameters(), lr=lr)
+        self.optimizer = optimizer or optim.Adam(
+            model.parameters(),
+            lr=lr,
+            weight_decay=weight_decay  # L2 regularization
+        )
+        self.early_stopping = EarlyStopping(
+            patience=early_stopping_patience,
+            min_delta=early_stopping_min_delta
+        )
         
     def train_epoch(
         self,
         X_train: torch.Tensor,
         y_train: torch.Tensor
     ) -> float:
-        """Train for one epoch."""
+        """Train for one epoch with regularization."""
         self.model.train()
         self.optimizer.zero_grad()
         
         outputs = self.model(X_train).squeeze()
         loss = self.criterion(outputs, y_train)
         
+        # Add L2 regularization manually if not using optimizer's weight_decay
+        l2_lambda = 0.01
+        l2_reg = torch.tensor(0., requires_grad=True)
+        for param in self.model.parameters():
+            l2_reg = l2_reg + torch.norm(param, 2)
+        loss = loss + l2_lambda * l2_reg
+        
         loss.backward()
         self.optimizer.step()
         
         return loss.item()
+    
+    def train(
+        self,
+        X_train: torch.Tensor,
+        y_train: torch.Tensor,
+        X_val: torch.Tensor,
+        y_val: torch.Tensor,
+        epochs: int,
+        callback = None
+    ):
+        """Train the model with early stopping."""
+        for epoch in range(epochs):
+            train_loss = self.train_epoch(X_train, y_train)
+            val_loss, metrics = self.evaluate(X_val, y_val)
+            
+            if callback:
+                callback(epoch, train_loss, val_loss, metrics)
+            
+            # Check early stopping
+            if self.early_stopping(self.model, val_loss):
+                print(f"\nEarly stopping triggered at epoch {epoch}")
+                break
     
     def evaluate(
         self,
