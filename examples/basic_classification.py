@@ -2,58 +2,54 @@ import sys
 sys.dont_write_bytecode = True
 
 from rich import print
-from pathlib import Path
-from bssnn.model.bssnn import BSSNN
-from bssnn.training.trainer import run_training
-from bssnn.explainability.explainer import run_explanations
+from rich.console import Console
+from bssnn.utils.file_utils import create_timestamped_dir
+from bssnn.training.cross_validation import run_cross_validation
+from bssnn.training.trainer import run_final_model_training
 from bssnn.utils.data_loader import DataLoader
 from bssnn.config.config import BSSNNConfig
 from bssnn.visualization.visualization import setup_rich_logging
 
+console = Console()
 
 def main(config_path: str):
-    """Main execution function."""
-    # Set up logging
-    setup_rich_logging()
-    
-    # Load configuration
-    config = BSSNNConfig.from_yaml(config_path)
-    print("\n[bold cyan]Loading configuration...[/bold cyan]")
-    
-    # Load and prepare data
-    (X_train, X_val, y_train, y_val), n_features = DataLoader.load_and_prepare_data(
-        config.data
-    )
-    
-    # Update model configuration based on data
-    config.model.adapt_to_data(n_features)
-    
-    # Initialize model
-    model = BSSNN(
-        input_size=config.model.input_size,
-        hidden_size=config.model.hidden_size
-    )
-    
-    # Run training
-    run_training(config, model, X_train, X_val, y_train, y_val)
-    
-    # Run explanations if enabled
-    if config.explainability.enabled:
-        explanations_dir = Path(config.output.base_dir) / config.output.explanations_dir
-        explanations_dir.mkdir(parents=True, exist_ok=True)
-        run_explanations(config, model, X_train, X_val, save_dir=str(explanations_dir))
-    
-    # Save final configuration
-    config_save_path = Path(config.output.base_dir) / "final_config.yaml"
-    config.save(str(config_save_path))
-    print(f"\n[green]Configuration saved to[/green] {config_save_path}")
-    
-    print("\n[bold green]Processing completed successfully![/bold green]")
-    
+    """Main execution function for BSSNN training pipeline."""
+    try:
+        # Create output directory
+        output_dir = create_timestamped_dir("results")
+        console.print(f"\n[cyan]Created results directory:[/cyan] {output_dir}")
+        
+        # Setup logging
+        setup_rich_logging(str(output_dir / 'run.log'))
+        
+        # Initialize configuration
+        config = BSSNNConfig.from_yaml(config_path)
+        config.initialize_and_validate(config_path, output_dir)
+        
+        # Prepare data
+        data_loader = DataLoader()
+        X, y = data_loader.prepare_data(config)
+        
+        # Run cross-validation
+        cv_metrics, _ = run_cross_validation(config, X, y, output_dir)
+        
+        # Train final model if requested
+        if config.output.save_model:
+            final_model = run_final_model_training(config, X, y, output_dir)
+        
+        # Save configuration
+        config_path = config.save_final_config(output_dir)
+        console.print(f"\n[green]Configuration saved to[/green] {config_path}")
+        console.print("\n[green]Execution completed successfully![/green]")
+        
+    except Exception as e:
+        console.print(f"\n[red]Error during execution: {str(e)}[/red]")
+        raise
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
-        print("[red]Please provide the path to the configuration file.[/red]")
+        console.print("[red]Please provide the path to the configuration file.[/red]")
+        console.print("Usage: python basic_classification.py <config_path>")
         sys.exit(1)
     
     main(sys.argv[1])

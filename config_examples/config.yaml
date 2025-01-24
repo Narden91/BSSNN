@@ -20,7 +20,11 @@ data:
     - feature2
     - feature3
   target_column: target
-  test_size: 0.2
+  validation:
+    test_size: 0.2  # Final test set size
+    val_size: 0.2   # Validation set size for each fold
+    n_folds: 5      # Number of cross-validation folds
+    stratify: true  # Whether to use stratified splits
   random_state: 42
   
   # Synthetic data parameters (used if input_path is null)

@@ -1,8 +1,17 @@
-import yaml
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any
 from pathlib import Path
 import logging
+import yaml
+
+
+@dataclass
+class ValidationConfig:
+    """Configuration for validation strategy."""
+    test_size: float = 0.2
+    val_size: float = 0.2
+    n_folds: int = 5
+    stratify: bool = True
 
 
 @dataclass
@@ -28,11 +37,7 @@ class TrainingConfig:
     num_epochs: int = 100
     batch_size: int = 32
     learning_rate: float = 0.001
-    display_metrics: List[str] = None
-
-    def __post_init__(self):
-        if self.display_metrics is None:
-            self.display_metrics = ['accuracy', 'f1_score', 'auc_roc', 'calibration_error']
+    display_metrics: List[str] = field(default_factory=lambda: ['accuracy', 'f1_score', 'auc_roc', 'calibration_error'])
 
 
 @dataclass
@@ -41,7 +46,7 @@ class DataConfig:
     input_path: Optional[str] = None
     feature_columns: Optional[List[str]] = None
     target_column: Optional[str] = None
-    test_size: float = 0.2
+    validation: ValidationConfig = field(default_factory=ValidationConfig)
     random_state: int = 42
     
     # Synthetic data parameters (used if input_path is None)
@@ -130,10 +135,15 @@ class BSSNNConfig:
         with open(config_path, 'r') as f:
             config_dict = yaml.safe_load(f)
         
+        # Create validation config first if it exists
+        data_config_dict = config_dict.get('data', {})
+        if 'validation' in data_config_dict:
+            data_config_dict['validation'] = ValidationConfig(**data_config_dict['validation'])
+        
         # Create individual config objects
         model_config = ModelConfig(**config_dict.get('model', {}))
         training_config = TrainingConfig(**config_dict.get('training', {}))
-        data_config = DataConfig(**config_dict.get('data', {}))
+        data_config = DataConfig(**data_config_dict)
         explainability_config = ExplainabilityConfig(**config_dict.get('explainability', {}))
         output_config = OutputConfig(**config_dict.get('output', {}))
         
@@ -161,10 +171,32 @@ class BSSNNConfig:
         config_dict = {
             'model': self.model.__dict__,
             'training': self.training.__dict__,
-            'data': self.data.__dict__,
+            'data': {
+                **{k: v for k, v in self.data.__dict__.items() if k != 'validation'},
+                'validation': self.data.validation.__dict__
+            },
             'explainability': self.explainability.__dict__,
             'output': self.output.__dict__
         }
         
         with open(path, 'w') as f:
             yaml.dump(config_dict, f, default_flow_style=False)
+            
+    def initialize_and_validate(self, config_path: str, output_dir: Path) -> 'BSSNNConfig':
+        """Initialize and validate configuration."""
+        self.output.base_dir = str(output_dir)
+        
+        # Validate critical configuration
+        if self.output.save_model and not self.output.model_dir:
+            raise ValueError("Model directory must be specified when save_model is True")
+            
+        return self
+
+    def save_final_config(self, output_dir: Path):
+        """Save final configuration to output directory."""
+        try:
+            config_save_path = output_dir / "final_config.yaml"
+            self.save(str(config_save_path))
+            return config_save_path
+        except Exception as e:
+            raise ValueError(f"Could not save configuration: {str(e)}")

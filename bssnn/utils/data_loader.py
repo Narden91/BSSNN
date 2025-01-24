@@ -1,39 +1,104 @@
 from dataclasses import dataclass
-from typing import Optional, List, Dict, Any, Tuple
+from typing import Optional, List, Dict, Any, Tuple, Generator
+from sklearn.model_selection import KFold, StratifiedKFold, train_test_split
 import torch
 import pandas as pd
 from pathlib import Path
 from sklearn.datasets import make_classification
 from sklearn.preprocessing import StandardScaler
 from rich import print
-from bssnn.config.config import DataConfig
+from bssnn.config.config import BSSNNConfig, DataConfig
 
 
 class DataLoader:
-    """Data loading and preparation class that handles all data operations."""
+    """Data loading and preparation class with cross-validation support."""
     
     @staticmethod
     def load_and_prepare_data(config: 'DataConfig') -> Tuple[torch.Tensor, torch.Tensor, int]:
-        """Main entry point for data loading and preparation.
+        """Main entry point for data loading and preparation."""
+        X, y, n_features = DataLoader._load_data(config)
+        return X, y, n_features
+    
+    @staticmethod
+    def get_cross_validation_splits(
+        X: torch.Tensor,
+        y: torch.Tensor,
+        config: 'DataConfig',
+        fold: int
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Generate cross-validation split for a specific fold.
         
         Args:
-            config: Data configuration object
+            X: Feature tensor
+            y: Target tensor
+            config: Data configuration
+            fold: Current fold number (1-based)
             
         Returns:
-            Tuple containing (features, targets, number of features)
+            (X_train, X_val, X_test, y_train, y_val, y_test) for the specified fold
         """
-        # Load raw data
-        X, y, n_features = DataLoader._load_data(config)
+        # Convert tensors to numpy for sklearn operations
+        X_np = X.numpy()
+        y_np = y.numpy()
         
-        # Prepare and split data
-        data_splits = DataLoader._prepare_data(
-            X, y,
-            test_size=config.test_size,
+        # Create splitter
+        if config.validation.stratify:
+            cv = StratifiedKFold(
+                n_splits=config.validation.n_folds,
+                shuffle=True,
+                random_state=config.random_state
+            )
+        else:
+            cv = KFold(
+                n_splits=config.validation.n_folds,
+                shuffle=True,
+                random_state=config.random_state
+            )
+        
+        # Get indices for the specified fold
+        splits = list(cv.split(X_np, y_np))
+        train_idx, test_idx = splits[fold - 1]  # fold is 1-based
+        
+        # Get initial train and test sets for this fold
+        X_train_fold = X_np[train_idx]
+        y_train_fold = y_np[train_idx]
+        X_test_fold = X_np[test_idx]
+        y_test_fold = y_np[test_idx]
+        
+        # Further split training data into train and validation
+        X_train_final, X_val, y_train_final, y_val = train_test_split(
+            X_train_fold,
+            y_train_fold,
+            test_size=config.validation.val_size,
+            stratify=y_train_fold if config.validation.stratify else None,
             random_state=config.random_state
         )
         
-        return data_splits, n_features
+        # Scale features using only training data statistics
+        scaler = StandardScaler()
+        X_train_scaled = scaler.fit_transform(X_train_final)
+        X_val_scaled = scaler.transform(X_val)
+        X_test_scaled = scaler.transform(X_test_fold)
+        
+        # Convert back to tensors
+        X_train_tensor = torch.tensor(X_train_scaled, dtype=torch.float32)
+        X_val_tensor = torch.tensor(X_val_scaled, dtype=torch.float32)
+        X_test_tensor = torch.tensor(X_test_scaled, dtype=torch.float32)
+        y_train_tensor = torch.tensor(y_train_final, dtype=torch.float32)
+        y_val_tensor = torch.tensor(y_val, dtype=torch.float32)
+        y_test_tensor = torch.tensor(y_test_fold, dtype=torch.float32)
+        
+        return (
+            X_train_tensor, X_val_tensor, X_test_tensor,
+            y_train_tensor, y_val_tensor, y_test_tensor
+        )
     
+    def prepare_data(self, config: 'BSSNNConfig') -> tuple:
+        """Load and prepare data for training."""
+        X, y, n_features = self.load_and_prepare_data(config.data)
+        config.model.adapt_to_data(n_features)
+        return X, y
+
     @staticmethod
     def _load_data(config: 'DataConfig') -> Tuple[torch.Tensor, torch.Tensor, int]:
         """Load data from file or generate synthetic data."""

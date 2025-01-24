@@ -13,21 +13,37 @@ from typing import Any, Dict, List, Optional
 
 
 def setup_rich_logging(log_path: Optional[str] = None):
-    """Configure Rich logging handler."""
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(message)s",
-        handlers=[
-            logging.StreamHandler(sys.stdout)
-        ]
-    )
+    """Configure Rich logging handler with optional file output.
     
+    Args:
+        log_path: Optional path to save log file
+    """
+    # Configure console logging
+    console_handler = RichHandler(
+        rich_tracebacks=True,
+        console=Console(force_terminal=True)
+    )
+    console_handler.setFormatter(logging.Formatter("%(message)s"))
+    
+    # Create logger
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+    logger.addHandler(console_handler)
+    
+    # Add file handler if log_path is provided
     if log_path:
+        # Create directory if it doesn't exist
+        log_dir = Path(log_path).parent
+        log_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Configure file handler
         file_handler = logging.FileHandler(log_path)
         file_handler.setFormatter(logging.Formatter(
             '%(asctime)s - %(levelname)s - %(message)s'
         ))
-        logging.getLogger().addHandler(file_handler)
+        logger.addHandler(file_handler)
+        
+        logging.info(f"Logging to file: {log_path}")
 
 
 class TrainingProgress:
@@ -43,12 +59,7 @@ class TrainingProgress:
         self._setup_progress()
 
     def _setup_progress(self):
-        """Set up the progress display with proper spacing."""
-        print("\n" + "="*75)
-        print("Training Configuration:")
-        print(f"Total Epochs: {self.total_epochs}")
-        print("=" * 75 + "\n")
-        
+        """Set up the progress display."""
         metric_columns = [
             TextColumn("[progress.description]{task.description}"),
             BarColumn(complete_style="green"),
@@ -101,6 +112,7 @@ class TrainingProgress:
             completed=epoch,
             **update_fields
         )
+
     
     def _save_training_results(self, duration: datetime, final_loss: float, final_metrics: Dict[str, float]):
         """Save training results to text and CSV files."""
@@ -153,6 +165,26 @@ class TrainingProgress:
         print(f"- Training summary: {self.results_dir/'training_summary.txt'}")
         print(f"- Metrics CSV: {self.results_dir/'training_metrics.csv'}")
 
+
+def print_cv_header(n_folds: int, dataset_sizes: Dict[str, int], total_epochs: int):
+    """Print initial cross-validation information."""
+    console = Console()
+    console.print("\n[bold blue]Cross-validation Configuration[/bold blue]")
+    console.print("=" * 80)
+    console.print(f"Number of folds: {n_folds}")
+    console.print(f"Total epochs per fold: {total_epochs}\n")
+    console.print("[bold]Dataset sizes:[/bold]")
+    console.print(f"Training samples:   {dataset_sizes['train']}")
+    console.print(f"Validation samples: {dataset_sizes['val']}")
+    console.print(f"Test samples:       {dataset_sizes['test']}")
+    console.print("=" * 80)
+
+
+def print_fold_start(fold: int, total_folds: int):
+    """Print minimal fold header."""
+    console = Console()
+    console.print(f"\n[bold cyan]Starting fold {fold}/{total_folds}[/bold cyan]")
+    
 
 class ExplainerProgress:
     """Progress visualization for model explanation process."""
