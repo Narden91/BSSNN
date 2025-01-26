@@ -1,8 +1,11 @@
 model:
   input_size: 10
   hidden_size: 64
+  state_size: 32          # New parameter
+  num_state_layers: 2     # New parameter
   dropout_rate: 0.2
   weight_decay: 0.01
+  model_type: "bssnn"  # Use "bssnn" for original model, "state_space_bssnn"
   early_stopping_patience: 10
   early_stopping_min_delta: 0.0001
 
@@ -37,7 +40,7 @@ data:
   synthetic_redundant: 4
 
 explainability:
-  enabled: true
+  enabled: false
   background_samples: 100
   max_val_samples: 100
   feature_names:

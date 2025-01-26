@@ -21,20 +21,26 @@ class BSSNN(nn.Module):
         super(BSSNN, self).__init__()
         
         # Joint pathway: P(y, X)
-        self.fc1_joint = nn.Linear(input_size, hidden_size)
-        self.dropout1_joint = nn.Dropout(dropout_rate)
-        self.batch_norm1_joint = nn.BatchNorm1d(hidden_size)
-        self.fc2_joint = nn.Linear(hidden_size, 1)
+        self.joint_network = nn.Sequential(
+            nn.Linear(input_size, hidden_size),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate),
+            nn.BatchNorm1d(hidden_size),
+            nn.Linear(hidden_size, 1)
+        )
         
         # Marginal pathway: P(X)
-        self.fc1_marginal = nn.Linear(input_size, hidden_size)
-        self.dropout1_marginal = nn.Dropout(dropout_rate)
-        self.batch_norm1_marginal = nn.BatchNorm1d(hidden_size)
-        self.fc2_marginal = nn.Linear(hidden_size, 1)
+        self.marginal_network = nn.Sequential(
+            nn.Linear(input_size, hidden_size),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate),
+            nn.BatchNorm1d(hidden_size),
+            nn.Linear(hidden_size, 1)
+        )
         
         self.sigmoid = nn.Sigmoid()
         
-        # Initialize weights using Xavier/Glorot initialization
+        # Initialize weights
         self._init_weights()
     
     def _init_weights(self):
@@ -54,18 +60,10 @@ class BSSNN(nn.Module):
             Conditional probability P(y|X) as tensor of shape (batch_size, 1)
         """
         # Joint probability computation
-        joint = self.fc1_joint(x)
-        joint = self.batch_norm1_joint(joint)
-        joint = F.relu(joint)
-        joint = self.dropout1_joint(joint)
-        joint = self.fc2_joint(joint)
+        joint = self.joint_network(x)
         
         # Marginal probability computation
-        marginal = self.fc1_marginal(x)
-        marginal = self.batch_norm1_marginal(marginal)
-        marginal = F.relu(marginal)
-        marginal = self.dropout1_marginal(marginal)
-        marginal = self.fc2_marginal(marginal)
+        marginal = self.marginal_network(x)
         
         # Bayesian division: P(y|X) = P(y, X) / P(X)
         conditional = joint - marginal  # Log-space division

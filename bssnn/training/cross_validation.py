@@ -147,7 +147,9 @@ def run_cross_validation(
         # Add extra spacing after progress bar
         console.print("\n[green]✓ Completed fold {}/{}[/green]\n".format(fold, n_folds))
         
-        if config.output.save_model and fold == n_folds:
+        # if config.output.save_model and fold == n_folds:
+        #     final_model = model
+        if fold == n_folds:
             final_model = model
     
     # Calculate and save summary statistics

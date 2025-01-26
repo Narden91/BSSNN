@@ -32,7 +32,7 @@ class BSSNNTrainer:
         self.optimizer = optimizer or optim.Adam(
             model.parameters(),
             lr=lr,
-            weight_decay=weight_decay  # L2 regularization
+            weight_decay=weight_decay
         )
         self.early_stopping = EarlyStopping(
             patience=early_stopping_patience,
@@ -72,17 +72,29 @@ class BSSNNTrainer:
         epochs: int,
         callback = None
     ):
-        """Train the model with early stopping."""
+        """Train the model with early stopping and progress updates."""
+        best_val_loss = float('inf')
+        
         for epoch in range(epochs):
+            # Training step
             train_loss = self.train_epoch(X_train, y_train)
+            
+            # Validation step
             val_loss, metrics = self.evaluate(X_val, y_val)
             
+            # Update best validation loss
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+            
+            # Call progress callback
             if callback:
-                callback(epoch, train_loss, val_loss, metrics)
+                callback(epoch + 1, val_loss, metrics)
             
             # Check early stopping
             if self.early_stopping(self.model, val_loss):
-                print(f"\nEarly stopping triggered at epoch {epoch}")
+                if callback:  # Make sure we update the progress one last time
+                    callback(epoch + 1, val_loss, metrics)
+                print(f"\nEarly stopping triggered at epoch {epoch + 1}")
                 break
     
     def evaluate(
@@ -93,8 +105,11 @@ class BSSNNTrainer:
         """Evaluate the model."""
         self.model.eval()
         with torch.no_grad():
+            # Get predictions
             val_outputs = self.model(X_val).squeeze()
             val_loss = self.criterion(val_outputs, y_val)
+            
+            # Calculate metrics
             metrics = calculate_metrics(y_val, val_outputs)
         
         return val_loss.item(), metrics
@@ -139,41 +154,25 @@ def run_training(
         display_metrics=config.training.display_metrics
     )
     
-    # Determine training phase
-    phase = "Final Model" if is_final else f"Fold {fold}" if fold is not None else "Training"
-    
-    # Print training configuration if not in silent mode
-    if not silent:
-        print(
-            f"\n[cyan]{phase} Configuration[/cyan]",
-            f"\nEpochs: {config.training.num_epochs}",
-            f"\nLearning Rate: {config.training.learning_rate}",
-            f"\nBatch Size: {config.training.batch_size}"
-        )
-        print(f"\n[bold cyan]Starting {phase.lower()}...[/bold cyan]")
-    
-    for epoch in range(1, config.training.num_epochs + 1):
-        # Training step
-        train_loss = trainer.train_epoch(X_train, y_train)
-        
-        # Validation step
-        val_loss, metrics = trainer.evaluate(X_val, y_val)
-        
-        # Update progress if not in silent mode
+    # Define progress callback
+    def update_progress(epoch: int, loss: float, metrics: dict):
         if not silent:
-            progress.update(epoch, val_loss, metrics)
+            progress.update(epoch, loss, metrics)
     
-    # Complete training with final metrics if not in silent mode
+    # Train the model
+    trainer.train(
+        X_train=X_train,
+        y_train=y_train,
+        X_val=X_val,
+        y_val=y_val,
+        epochs=config.training.num_epochs,
+        callback=update_progress
+    )
+    
+    # Complete progress if not in silent mode
     if not silent:
-        progress.complete(val_loss, metrics)
-    
-    # Save model if specified in config and this is the final model
-    if config.output.save_model and is_final:
-        save_path = Path(config.output.model_dir) / "model.pt"
-        save_path.parent.mkdir(parents=True, exist_ok=True)
-        torch.save(model.state_dict(), save_path)
-        if not silent:
-            print(f"\n[green]Model saved to[/green] {save_path}")
+        _, final_metrics = trainer.evaluate(X_val, y_val)
+        progress.complete(trainer.early_stopping.best_loss, final_metrics)
     
     return trainer
 

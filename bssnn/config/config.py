@@ -13,25 +13,27 @@ class ValidationConfig:
     n_folds: int = 5
     stratify: bool = True
 
-
 @dataclass
 class ModelConfig:
     """Configuration for BSSNN model architecture."""
     input_size: Optional[int] = None
     hidden_size: Optional[int] = None
+    state_size: Optional[int] = 32  # New parameter
+    num_state_layers: int = 2       # New parameter
     dropout_rate: float = 0.2
-    weight_decay: float = 0.01  # L2 regularization parameter
+    weight_decay: float = 0.01
+    model_type: str = "bssnn"       # Can be "bssnn" or "state_space_bssnn"
     early_stopping_patience: int = 10
     early_stopping_min_delta: float = 1e-4
 
     def adapt_to_data(self, n_features: int):
         """Adapt model configuration to data dimensions."""
         self.input_size = n_features
-        # Set hidden size to a reasonable default if not specified
         if self.hidden_size is None:
-            # Use a heuristic for hidden size based on input size
             self.hidden_size = max(64, min(256, 2 * n_features))
-            logging.info(f"Setting hidden size to {self.hidden_size} based on input dimension {n_features}")
+        if self.state_size is None:
+            self.state_size = max(32, self.hidden_size // 2)
+        logging.info(f"Setting hidden size to {self.hidden_size} and state size to {self.state_size}")
 
 
 @dataclass
@@ -121,16 +123,11 @@ class BSSNNConfig:
     def _setup_directories(self):
         """Create necessary output directories."""
         base_path = Path(self.output.base_dir)
-        
-        # Create all required directories
-        directories = {
-            'model': base_path / self.output.model_dir,
-            'explanations': base_path / self.output.explanations_dir,
-            'logs': base_path / self.output.logs_dir
+        self.directories = {
+            'model': 'models',
+            'explanations': 'explanations', 
+            'logs': 'logs'
         }
-        
-        for path in directories.values():
-            path.mkdir(parents=True, exist_ok=True)
     
     @classmethod
     def from_yaml(cls, config_path: str) -> 'BSSNNConfig':

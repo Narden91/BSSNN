@@ -52,7 +52,7 @@ class TrainingProgress:
     def __init__(self, total_epochs: int, display_metrics: List[str], results_dir: str = "results"):
         """Initialize the training progress tracker."""
         self.total_epochs = total_epochs
-        self.display_metrics = display_metrics[:3]
+        self.display_metrics = display_metrics[:3]  # Limit to first 3 metrics for display
         self.start_time = datetime.now()
         self.results_dir = Path(results_dir)
         self.results_dir.mkdir(parents=True, exist_ok=True)
@@ -60,58 +60,71 @@ class TrainingProgress:
 
     def _setup_progress(self):
         """Set up the progress display."""
-        metric_columns = [
+        self.console = Console(force_terminal=True)
+        
+        # Define columns for progress display
+        columns = [
             TextColumn("[progress.description]{task.description}"),
             BarColumn(complete_style="green"),
             TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
             TextColumn("Epoch: {task.fields[epoch]}/{task.fields[total_epochs]}"),
-            TextColumn("Loss: {task.fields[loss]:.4f}"),
+            TextColumn("Loss: {task.fields[loss]:.4f}")
         ]
         
+        # Add columns for metrics
         for metric in self.display_metrics:
-            metric_columns.append(
+            columns.append(
                 TextColumn(f"{metric}: {{task.fields[{metric}]:.4f}}")
             )
             
-        metric_columns.append(TimeElapsedColumn())
+        columns.append(TimeElapsedColumn())
         
-        self.progress = Progress(
-            *metric_columns,
-            console=Console(force_terminal=True)
-        )
+        self.progress = Progress(*columns, console=self.console)
         
-        initial_fields = {
+        # Initialize fields
+        fields = {
             'epoch': 0,
             'total_epochs': self.total_epochs,
             'loss': 0.0
         }
         for metric in self.display_metrics:
-            initial_fields[metric] = 0.0
+            fields[metric] = 0.0
             
+        # Create task
         self.task_id = self.progress.add_task(
-            "Training:",
+            description="Training:",
             total=self.total_epochs,
-            **initial_fields
+            **fields
         )
         
         self.progress.start()
     
     def update(self, epoch: int, loss: float, metrics: Dict[str, float]):
         """Update and display the training progress."""
-        update_fields = {
-            'epoch': epoch,
-            'loss': loss
-        }
-        
-        for metric in self.display_metrics:
-            if metric in metrics:
-                update_fields[metric] = metrics[metric]
-        
-        self.progress.update(
-            self.task_id,
-            completed=epoch,
-            **update_fields
-        )
+        try:
+            # Prepare update fields
+            update_fields = {
+                'epoch': epoch,
+                'loss': loss
+            }
+            
+            # Update metric fields
+            for metric in self.display_metrics:
+                if metric in metrics:
+                    update_fields[metric] = metrics[metric]
+            
+            # Update progress
+            self.progress.update(
+                task_id=self.task_id,
+                completed=epoch,  # This updates the progress bar
+                **update_fields
+            )
+            
+            # Force refresh display
+            self.progress.refresh()
+            
+        except Exception as e:
+            print(f"Error updating progress: {str(e)}")
 
     
     def _save_training_results(self, duration: datetime, final_loss: float, final_metrics: Dict[str, float]):
@@ -140,30 +153,34 @@ class TrainingProgress:
                 writer.writerow([metric, float(value)])
     
     def complete(self, final_loss: float, final_metrics: Dict[str, float]):
-        """Display and save final training summary."""
-        self.progress.stop()
-        
-        duration = datetime.now() - self.start_time
-        
-        # Save results to files
-        self._save_training_results(duration, final_loss, final_metrics)
-        
-        # Display results in console
-        print("\n" + "="*75)
-        print("Training Results:")
-        print("-"*35)
-        print(f"Total time: {duration}")
-        print(f"Final loss: {float(final_loss):.4f}")
-        print("-"*35)
-        print("Metrics:")
-        
-        for metric, value in final_metrics.items():
-            print(f"{metric}: {float(value):.4f}")
-        
-        print("="*75)
-        print(f"\nResults saved to: {self.results_dir}")
-        print(f"- Training summary: {self.results_dir/'training_summary.txt'}")
-        print(f"- Metrics CSV: {self.results_dir/'training_metrics.csv'}")
+        """Complete the progress tracking and display final results."""
+        try:
+            # Update final state
+            self.update(self.total_epochs, final_loss, final_metrics)
+            
+            # Stop progress display
+            self.progress.stop()
+            
+            # Calculate duration
+            duration = datetime.now() - self.start_time
+            
+            # Save results
+            self._save_training_results(duration, final_loss, final_metrics)
+            
+            # Display final summary
+            self.console.print("\n" + "="*75)
+            self.console.print("Training Results:")
+            self.console.print("-"*35)
+            self.console.print(f"Total time: {duration}")
+            self.console.print(f"Final loss: {float(final_loss):.4f}")
+            self.console.print("-"*35)
+            self.console.print("Final Metrics:")
+            
+            for metric, value in final_metrics.items():
+                self.console.print(f"{metric}: {float(value):.4f}")
+            
+        except Exception as e:
+            print(f"Error completing progress: {str(e)}")
 
 
 def print_cv_header(n_folds: int, dataset_sizes: Dict[str, int], total_epochs: int):

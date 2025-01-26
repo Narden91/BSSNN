@@ -20,13 +20,36 @@ class BSSNNExplainer:
             feature_names: Optional list of feature names
         """
         self.model = model
-        self.feature_names = feature_names or [
-            f"Feature {i+1}" for i in range(model.fc1_joint.in_features)
-        ]
+        # Get input size from first layer of joint network
+        input_size = model.joint_network[0].in_features
+        self.feature_names = feature_names or [f"Feature {i+1}" for i in range(input_size)]
+
+    def _get_feature_importance(self) -> np.ndarray:
+        """Calculate feature importance from model weights."""
+        # Get weights from first layer of both networks
+        joint_weights = self.model.joint_network[0].weight.data.numpy()
+        marginal_weights = self.model.marginal_network[0].weight.data.numpy()
+        return np.abs(joint_weights).mean(axis=0) + np.abs(marginal_weights).mean(axis=0)
+    
+    def _plot_feature_importance(self, importance: np.ndarray, save_dir: Path):
+        """Create and save feature importance plot.
+        
+        Args:
+            importance: Array of feature importance scores
+            save_dir: Directory to save the plot
+        """
+        plt.figure(figsize=(10, 6))
+        indices = np.argsort(importance)
+        plt.barh(range(len(indices)), importance[indices], 
+                tick_label=np.array(self.feature_names)[indices])
+        plt.title("Feature Importance")
+        plt.tight_layout()
+        plt.savefig(save_dir/"feature_importance_direct.png", bbox_inches='tight', dpi=300)
+        plt.close()
 
     def explain(self, X_train: torch.Tensor, X_val: torch.Tensor,
                 save_dir: Optional[str] = None) -> Dict[str, np.ndarray]:
-        """Generate comprehensive explanations with robust output suppression.
+        """Generate comprehensive explanations.
         
         Args:
             X_train: Training data tensor
@@ -48,126 +71,66 @@ class BSSNNExplainer:
             save_path = Path(save_dir)
             save_path.mkdir(parents=True, exist_ok=True)
             
-            print("[bold cyan]2. Creating visualizations...[/bold cyan]")
             self._plot_feature_importance(results['feature_importance'], save_path)
-            
-            print("[bold cyan]3. Computing SHAP values...[/bold cyan]")
+            print("[bold cyan]2. Computing SHAP values...[/bold cyan]")
             results.update(self._compute_shap_values(X_train, X_val, save_path))
         
         print("[bold green]✓ Explanation process completed[/bold green]")
         return results
 
-    def _get_feature_importance(self) -> np.ndarray:
-        """Calculate feature importance from model weights.
-        
-        Returns:
-            Array of feature importance scores
-        """
-        joint_weights = self.model.fc1_joint.weight.data.numpy()
-        marginal_weights = self.model.fc1_marginal.weight.data.numpy()
-        return np.abs(joint_weights).mean(axis=0) + np.abs(marginal_weights).mean(axis=0)
-
-    def _plot_feature_importance(self, importance: np.ndarray, save_dir: Path):
-        """Save feature importance visualization.
-        
-        Args:
-            importance: Array of importance scores
-            save_dir: Directory to save the plot
-        """
-        with contextlib.redirect_stdout(open(os.devnull, 'w')):
-            plt.figure(figsize=(10, 6))
-            indices = np.argsort(importance)
-            plt.barh(range(len(indices)), importance[indices], 
-                    tick_label=np.array(self.feature_names)[indices])
-            plt.title("Feature Importance")
-            plt.tight_layout()
-            plt.savefig(save_dir/"feature_importance.png", bbox_inches='tight', dpi=300)
-            plt.close()
+    def _plot_shap_summary(self, shap_values, val_sample, save_dir):
+        """Create and save SHAP summary plot."""
+        plt.figure(figsize=(10, 6))
+        shap.summary_plot(
+            shap_values, 
+            val_sample, 
+            feature_names=self.feature_names,
+            show=False,
+            plot_type="violin"
+        )
+        plt.tight_layout()
+        plt.savefig(save_dir/"shap_summary.png", bbox_inches='tight', dpi=300)
+        plt.close()
+    
+    def _plot_shap_importance(self, shap_values, save_dir):
+        """Create and save SHAP importance plot."""
+        plt.figure(figsize=(10, 6))
+        shap_importance = np.abs(shap_values).mean(axis=0)
+        idx = np.argsort(shap_importance)
+        plt.barh(range(len(self.feature_names)), shap_importance[idx])
+        plt.yticks(range(len(self.feature_names)), 
+                  [self.feature_names[i] for i in idx])
+        plt.xlabel('Mean |SHAP value|')
+        plt.title('Feature Importance (SHAP)')
+        plt.tight_layout()
+        plt.savefig(save_dir/"shap_importance.png", bbox_inches='tight', dpi=300)
+        plt.close()
 
     def _compute_shap_values(self, X_train: torch.Tensor, X_val: torch.Tensor,
-                           save_dir: Path) -> Dict[str, np.ndarray]:
-        """Compute SHAP values with comprehensive output suppression.
-        
-        Args:
-            X_train: Training data tensor
-            X_val: Validation data tensor
-            save_dir: Directory to save visualizations
-            
-        Returns:
-            Dictionary containing SHAP values and expected value
-        """
+                            save_dir: Path) -> Dict[str, np.ndarray]:
+        """Compute SHAP values."""
         self.model.eval()
         
-        # Suppress all output during SHAP computation
-        with open(os.devnull, 'w') as fnull, \
-             contextlib.redirect_stdout(fnull), \
-             contextlib.redirect_stderr(fnull):
-            
-            def model_wrapper(x):
-                with torch.no_grad():
-                    x_tensor = torch.tensor(x, dtype=torch.float32)
-                    joint = self.model.fc2_joint(self.model.relu_joint(
-                        self.model.fc1_joint(x_tensor)))
-                    marginal = self.model.fc2_marginal(self.model.relu_marginal(
-                        self.model.fc1_marginal(x_tensor)))
-                    return (joint - marginal).numpy().flatten()
-
-            # Use subset of training data for background
-            background = X_train[:100].numpy()
-            explainer = shap.KernelExplainer(model_wrapper, background, silent=True)
-            
-            # Compute SHAP values for subset of validation data
-            val_sample = X_val[:100].numpy()
-            # Temporarily disable all Python warnings and logging
-            import warnings
-            import logging
-            logging.disable(logging.CRITICAL)
-            warnings.filterwarnings('ignore')
-            
-            # Redirect all possible outputs
-            null_fds = [os.open(os.devnull, os.O_RDWR) for _ in range(2)]
-            save_fds = [os.dup(1), os.dup(2)]
-            os.dup2(null_fds[0], 1)
-            os.dup2(null_fds[1], 2)
-            
-            try:
-                shap_values = explainer.shap_values(val_sample, silent=True, nsamples=100)
-            finally:
-                # Restore file descriptors
-                os.dup2(save_fds[0], 1)
-                os.dup2(save_fds[1], 2)
-                
-                # Close all temporary file descriptors
-                for fd in null_fds + save_fds:
-                    os.close(fd)
-                    
-                # Re-enable logging and warnings
-                logging.disable(logging.NOTSET)
-                warnings.filterwarnings('default')
-            
-            # Create and save SHAP summary plot
-            plt.figure(figsize=(10, 6))
-            shap.summary_plot(shap_values, val_sample, 
-                            feature_names=self.feature_names, 
-                            show=False,
-                            plot_type="violin")
-            plt.tight_layout()
-            plt.savefig(save_dir/"shap_summary.png", bbox_inches='tight', dpi=300)
-            plt.close()
-
-            # Create and save SHAP bar plot
-            plt.figure(figsize=(10, 6))
-            shap_importance = np.abs(shap_values).mean(axis=0)
-            idx = np.argsort(shap_importance)
-            plt.barh(range(len(self.feature_names)), shap_importance[idx])
-            plt.yticks(range(len(self.feature_names)), 
-                      [self.feature_names[i] for i in idx])
-            plt.xlabel('Mean |SHAP value|')
-            plt.title('Feature Importance (SHAP)')
-            plt.tight_layout()
-            plt.savefig(save_dir/"shap_importance.png", bbox_inches='tight', dpi=300)
-            plt.close()
-
+        def model_wrapper(x):
+            """Wrapper function for SHAP explainer."""
+            with torch.no_grad():
+                x_tensor = torch.tensor(x, dtype=torch.float32)
+                return self.model(x_tensor).numpy()
+        
+        # Use subset of training data for background
+        background = X_train[:100].numpy()
+        
+        # Create and configure SHAP explainer
+        explainer = shap.KernelExplainer(model_wrapper, background, silent=True)
+        
+        # Compute SHAP values
+        val_sample = X_val[:100].numpy()
+        shap_values = explainer.shap_values(val_sample, silent=True, nsamples=100)
+        
+        # Create visualizations
+        self._plot_shap_summary(shap_values, val_sample, save_dir)
+        self._plot_shap_importance(shap_values, save_dir)
+        
         return {
             'shap_values': np.array(shap_values),
             'expected_value': explainer.expected_value
