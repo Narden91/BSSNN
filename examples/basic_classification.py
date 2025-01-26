@@ -61,23 +61,25 @@ def main(config_path: str):
         
         # Save test metrics
         test_metrics_path = output_dir / "test_set_metrics.csv"
-        save_metrics_to_csv(test_metrics, test_metrics_path)
+        save_metrics_to_csv({'test_loss': test_loss, **test_metrics}, test_metrics_path)
         
-        # Also save the test loss with metrics
-        test_results = {'test_loss': test_loss, **test_metrics}
-        save_metrics_to_csv(test_results, test_metrics_path)
-        
-        # Generate explanations using TEST set
+        # Generate explanations only once, after final evaluation
         if config.explainability.enabled and final_model is not None:
-            console.print("\n[bold blue]Generating Model Explanations[/bold blue]")
             explanations_dir = output_dir / config.output.explanations_dir
-            run_explanations(
-                config=config,
-                model=final_model,
-                X_train=X_train_val,  # Training data (no test leakage)
-                X_val=X_test,         # Explanations on test set
-                save_dir=str(explanations_dir)
-            )
+            explanations_dir.mkdir(parents=True, exist_ok=True)
+            
+            try:
+                explanations = run_explanations(
+                    config=config,
+                    model=final_model,
+                    X_train=X_train_val,
+                    X_val=X_test_scaled,
+                    save_dir=str(explanations_dir)
+                )
+                console.print("[green]Model explanations generated successfully[/green]")
+            except Exception as e:
+                console.print(f"[yellow]Warning: Model explanation generation failed: {str(e)}[/yellow]")
+                console.print("[yellow]Continuing with rest of the experiment...[/yellow]")
         
         # Save the best model if requested
         if config.output.save_model and best_model is not None:

@@ -40,7 +40,7 @@ data:
   synthetic_redundant: 4
 
 explainability:
-  enabled: false
+  enabled: true
   background_samples: 100
   max_val_samples: 100
   feature_names:

@@ -34,26 +34,6 @@ def setup_rich_logging(log_path: Optional[str] = None):
         console=Console(force_terminal=True)
     )
     console_handler.setFormatter(logging.Formatter("%(message)s"))
-    
-    # Create logger
-    logger = logging.getLogger()
-    logger.setLevel(logging.INFO)
-    logger.addHandler(console_handler)
-    
-    # Add file handler if log_path is provided
-    if log_path:
-        # Create directory if it doesn't exist
-        log_dir = Path(log_path).parent
-        log_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Configure file handler
-        file_handler = logging.FileHandler(log_path)
-        file_handler.setFormatter(logging.Formatter(
-            '%(asctime)s - %(levelname)s - %(message)s'
-        ))
-        logger.addHandler(file_handler)
-        
-        logging.info(f"Logging to file: {log_path}")
 
 
 class TrainingProgress:

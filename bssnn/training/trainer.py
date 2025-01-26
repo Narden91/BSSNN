@@ -196,18 +196,6 @@ def run_final_model_training(config: BSSNNConfig, X, y, output_dir: Path):
         silent=False
     )
     
-    # Run explanations if enabled
-    if config.explainability.enabled:
-        explanations_dir = output_dir / config.output.explanations_dir
-        explanations_dir.mkdir(parents=True, exist_ok=True)
-        run_explanations(
-            config, 
-            final_model, 
-            X_train, 
-            X_test, 
-            save_dir=str(explanations_dir)
-        )
-    
     return final_model
 
 

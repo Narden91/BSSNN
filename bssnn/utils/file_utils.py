@@ -1,6 +1,7 @@
 from pathlib import Path
 from datetime import datetime
 
+
 def create_timestamped_dir(base_dir: str) -> Path:
     """Create a timestamped directory within the base directory."""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
