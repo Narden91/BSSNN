@@ -12,7 +12,7 @@ from bssnn.training.metrics import calculate_metrics
 from bssnn.explainability.explainer import run_explanations
 from bssnn.utils.data_loader import DataLoader
 from bssnn.config.config import BSSNNConfig
-from bssnn.visualization.visualization import CrossValidationProgress, print_test_metrics, setup_rich_logging
+from bssnn.visualization.visualization import CrossValidationProgress, print_test_metrics, save_metrics_to_csv, setup_rich_logging
 
 
 console = Console()
@@ -42,6 +42,10 @@ def main(config_path: str):
         console.print("\n[bold blue]Running Cross-validation[/bold blue]")
         best_model, cv_metrics, final_scaler = run_cross_validation(config, X_train_val, y_train_val, output_dir)
         
+        # Save cross-validation metrics
+        cv_metrics_path = output_dir / "cross_validation_metrics.csv"
+        save_metrics_to_csv(cv_metrics, cv_metrics_path)
+        
         X_test_scaled = torch.tensor(
             final_scaler.transform(X_test.numpy()),  
             dtype=torch.float32
@@ -52,8 +56,16 @@ def main(config_path: str):
         final_model = run_final_model_training(config, X_train_val, y_train_val, output_dir)
         
         # Evaluate on test set
-        test_loss, test_metrics = evaluate_on_test_set(final_model, X_test, y_test)
+        test_loss, test_metrics = evaluate_on_test_set(final_model, X_test_scaled, y_test)
         print_test_metrics(test_loss, test_metrics)
+        
+        # Save test metrics
+        test_metrics_path = output_dir / "test_set_metrics.csv"
+        save_metrics_to_csv(test_metrics, test_metrics_path)
+        
+        # Also save the test loss with metrics
+        test_results = {'test_loss': test_loss, **test_metrics}
+        save_metrics_to_csv(test_results, test_metrics_path)
         
         # Generate explanations using TEST set
         if config.explainability.enabled and final_model is not None:
@@ -87,7 +99,7 @@ def main(config_path: str):
         config.save_final_config(output_dir)
         
         console.print("\n[green]Experiment completed successfully![/green]")
-        return best_model, cv_metrics
+        return 0
         
     except Exception as e:
         console.print(f"\n[red]Error during execution: {str(e)}[/red]")

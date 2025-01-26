@@ -342,3 +342,23 @@ def print_test_metrics(test_loss: float, test_metrics: Dict[str, float]) -> None
                         title="[bold green]Test Set Metrics[/bold green]", 
                         expand=False,
                         padding=(1, 4)))
+    
+
+def save_metrics_to_csv(metrics: Dict[str, Any], filename: Path):
+    """Save metrics dictionary to CSV file."""
+    filename.parent.mkdir(parents=True, exist_ok=True)
+    
+    if isinstance(metrics, dict) and any(isinstance(v, dict) for v in metrics.values()):
+        # Cross-validation style metrics with mean/std
+        with open(filename, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['Metric', 'Mean', 'Std'])
+            for metric, values in metrics.items():
+                writer.writerow([metric, values['mean'], values['std']])
+    else:
+        # Regular metrics
+        with open(filename, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['Metric', 'Value'])
+            for metric, value in metrics.items():
+                writer.writerow([metric, value])

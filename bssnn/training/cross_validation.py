@@ -1,3 +1,4 @@
+import csv
 from typing import Dict, Generator, Tuple, Optional, List
 import numpy as np
 import torch
@@ -108,6 +109,7 @@ def run_cross_validation(
     
     # Initialize metrics storage
     cv_metrics: List[Dict[str, float]] = []
+    fold_metrics = []
     best_model = None
     best_val_score = float('-inf')
     
@@ -145,6 +147,13 @@ def run_cross_validation(
         if val_score > best_val_score:
             best_val_score = val_score
             best_model = model
+        
+        # Save fold metrics
+        fold_results = {
+            'fold': fold,
+            **val_metrics
+        }
+        fold_metrics.append(fold_results)
     
     # Calculate and display average metrics
     if not cv_metrics:
@@ -152,6 +161,14 @@ def run_cross_validation(
     
     avg_metrics = calculate_cv_statistics(cv_metrics)
     progress.print_summary(avg_metrics)
+    
+    # Save all fold metrics
+    if output_dir:
+        fold_metrics_path = output_dir / "fold_metrics.csv"
+        with open(fold_metrics_path, 'w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=fold_metrics[0].keys())
+            writer.writeheader()
+            writer.writerows(fold_metrics)
     
     return best_model, avg_metrics, cv.get_test_scaler()
 
