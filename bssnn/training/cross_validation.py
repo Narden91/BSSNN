@@ -1,72 +1,158 @@
-from typing import Dict, Tuple, Optional
+from typing import Dict, Generator, Tuple, Optional, List
 import numpy as np
-import pandas as pd
 import torch
 from pathlib import Path
+from sklearn.model_selection import StratifiedKFold
+from sklearn.preprocessing import StandardScaler
 from rich.console import Console
+
+from bssnn.config.config import BSSNNConfig
+
 from ..model.bssnn import BSSNN
-from ..utils.data_loader import DataLoader
-from ..config.config import BSSNNConfig
 from ..training.trainer import run_training
-from ..visualization.visualization import CrossValidationProgress, print_cv_header, print_fold_start
-from bssnn.utils import data_loader
+from ..visualization.visualization import CrossValidationProgress
 
 console = Console()
 
-def save_fold_metrics(metrics: dict, fold: int, output_dir: Path) -> None:
-    """Save metrics for a single fold to CSV.
+class CrossValidator:
+    """Handles cross-validation while preventing data leakage."""
+    
+    def __init__(self, n_splits: int = 5, random_state: int = 42):
+        """Initialize cross-validator.
+        
+        Args:
+            n_splits: Number of cross-validation folds
+            random_state: Random seed for reproducibility
+        """
+        self.n_splits = n_splits
+        self.random_state = random_state
+        self.scaler = StandardScaler()
+        
+    def _scale_features(self, X_train: np.ndarray, X_val: np.ndarray, X_test: Optional[np.ndarray]) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
+        """Scale features using only training data statistics.
+        
+        Args:
+            X_train: Training features
+            X_val: Validation features
+            X_test: Optional test features
+            
+        Returns:
+            Scaled feature arrays
+        """
+        # Fit scaler only on training data
+        X_train_scaled = self.scaler.fit_transform(X_train)
+        # Transform validation and test sets using training statistics
+        X_val_scaled = self.scaler.transform(X_val)
+        X_test_scaled = self.scaler.transform(X_test) if X_test is not None else None
+        
+        return X_train_scaled, X_val_scaled, X_test_scaled
+        
+    def create_folds(self, X: np.ndarray, y: np.ndarray) -> Generator[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray], None, None]:
+        """Create stratified cross-validation folds.
+        
+        Args:
+            X: Input features
+            y: Target labels
+            
+        Yields:
+            Tuples of (X_train, X_val, y_train, y_val) for each fold
+        """
+        skf = StratifiedKFold(n_splits=self.n_splits, shuffle=True, random_state=self.random_state)
+        
+        for train_idx, val_idx in skf.split(X, y):
+            # Split data
+            X_train, X_val = X[train_idx], X[val_idx]
+            y_train, y_val = y[train_idx], y[val_idx]
+            
+            # Scale features
+            X_train_scaled, X_val_scaled, _ = self._scale_features(X_train, X_val, None)
+            
+            # Convert to tensors
+            X_train_tensor = torch.FloatTensor(X_train_scaled)
+            X_val_tensor = torch.FloatTensor(X_val_scaled)
+            y_train_tensor = torch.FloatTensor(y_train)
+            y_val_tensor = torch.FloatTensor(y_val)
+            
+            yield X_train_tensor, X_val_tensor, y_train_tensor, y_val_tensor
+
+def run_cross_validation(
+    config: 'BSSNNConfig',
+    X: torch.Tensor,
+    y: torch.Tensor,
+    output_dir: Optional[Path] = None
+) -> Tuple[Optional[BSSNN], Dict[str, Dict[str, float]]]:
+    """Run cross-validation with proper data handling.
     
     Args:
-        metrics: Dictionary of metric values
-        fold: Current fold number
-        output_dir: Directory to save metrics
+        config: Model and training configuration
+        X: Input features tensor
+        y: Target labels tensor
+        output_dir: Optional directory for saving results
+        
+    Returns:
+        Tuple of (best model, cross-validation metrics)
     """
-    metrics_df = pd.DataFrame([metrics])
-    metrics_df['fold'] = fold
-    metrics_dir = output_dir / 'fold_metrics'
-    metrics_dir.mkdir(parents=True, exist_ok=True)
-    metrics_df.to_csv(metrics_dir / f'fold_{fold}_metrics.csv', index=False)
+    # Convert tensors to numpy for sklearn compatibility
+    X_np = X.numpy()
+    y_np = y.numpy()
+    
+    # Initialize cross-validator
+    cv = CrossValidator(
+        n_splits=config.data.validation.n_folds,
+        random_state=config.data.random_state
+    )
+    
+    # Initialize metrics storage
+    cv_metrics: List[Dict[str, float]] = []
+    best_model = None
+    best_val_score = float('-inf')
+    
+    # Initialize progress tracking
+    progress = CrossValidationProgress(cv.n_splits)
+    
+    # Run cross-validation
+    for fold, (X_train, X_val, y_train, y_val) in enumerate(cv.create_folds(X_np, y_np), 1):
+        progress.start_fold(fold)
+        
+        # Initialize and train model
+        model = BSSNN(
+            input_size=config.model.input_size,
+            hidden_size=config.model.hidden_size,
+            dropout_rate=config.model.dropout_rate
+        )
+        
+        # Train model
+        trainer = run_training(
+            config=config,
+            model=model,
+            X_train=X_train,
+            X_val=X_val,
+            y_train=y_train,
+            y_val=y_val,
+            fold=fold
+        )
+        
+        # Evaluate on validation set
+        _, val_metrics = trainer.evaluate(X_val, y_val)
+        cv_metrics.append(val_metrics)
+        
+        # Update best model based on validation performance
+        val_score = val_metrics['auc_roc']
+        if val_score > best_val_score:
+            best_val_score = val_score
+            best_model = model
+    
+    # Calculate and display average metrics
+    if not cv_metrics:
+        raise ValueError("No metrics were collected during cross-validation.")
+    
+    avg_metrics = calculate_cv_statistics(cv_metrics)
+    progress.print_summary(avg_metrics)
+    
+    return best_model, avg_metrics
 
-def save_cv_summary(avg_metrics: Dict[str, Dict[str, float]], output_dir: Path) -> None:
-    """Save cross-validation summary statistics.
-    
-    Args:
-        avg_metrics: Dictionary of metric statistics
-        output_dir: Directory to save summary
-    """
-    metrics_dir = output_dir / 'fold_metrics'
-    metrics_dir.mkdir(parents=True, exist_ok=True)
-    
-    with open(metrics_dir / 'cv_summary.txt', 'w') as f:
-        f.write("Cross-validation Summary\n")
-        f.write("=" * 50 + "\n\n")
-        for metric, stats in avg_metrics.items():
-            f.write(f"{metric:<25} Mean: {stats['mean']:>8.4f}    Std: {stats['std']:>8.4f}\n")
-
-def print_cv_summary(avg_metrics: Dict[str, Dict[str, float]]) -> None:
-    """Print cross-validation results summary with proper spacing.
-    
-    Args:
-        avg_metrics: Dictionary of metric statistics
-    """
-    # Add spacing after the progress bar
-    console.print("\n\n" + "=" * 80)  # Extra newline for spacing
-    console.print("[bold green]Cross-validation Results (Test Set)[/bold green]")
-    console.print("=" * 80)
-    
-    # Format metrics output
-    metric_format = "{:<28} Mean: {:>8.4f}    Std: {:>8.4f}"
-    for metric, stats in avg_metrics.items():
-        console.print(metric_format.format(
-            metric,
-            stats['mean'],
-            stats['std']
-        ))
-    # Add extra newline at the end for spacing
-    console.print()
-
-def calculate_cv_statistics(cv_metrics: list) -> Dict[str, Dict[str, float]]:
-    """Calculate mean and standard deviation for all metrics across folds.
+def calculate_cv_statistics(cv_metrics: List[Dict[str, float]]) -> Dict[str, Dict[str, float]]:
+    """Calculate mean and standard deviation for metrics across folds.
     
     Args:
         cv_metrics: List of metric dictionaries from each fold
@@ -82,53 +168,3 @@ def calculate_cv_statistics(cv_metrics: list) -> Dict[str, Dict[str, float]]:
             'std': float(np.std(values))
         }
     return avg_metrics
-
-def run_cross_validation(
-    config: BSSNNConfig,
-    X: torch.Tensor,
-    y: torch.Tensor,
-    output_dir: Path,
-) -> Tuple[Dict[str, Dict[str, float]], Optional[BSSNN]]:
-    """Run cross-validation training with proper train/val/test splits.
-    
-    Args:
-        config: Training configuration
-        X: Input features tensor
-        y: Target labels tensor
-        output_dir: Directory for saving results
-        
-    Returns:
-        Tuple of (average metrics, final model if requested)
-    """
-    cv_metrics = []
-    best_model = None
-    best_performance = float('-inf')
-    data_loader = DataLoader()  # Initialize DataLoader instance
-    
-    for fold in range(1, config.data.validation.n_folds + 1):
-        splits = data_loader.get_cross_validation_splits(X, y, config.data, fold)
-        X_train, X_val, X_test, y_train, y_val, y_test = splits
-        
-        model = BSSNN(
-            input_size=config.model.input_size,
-            hidden_size=config.model.hidden_size
-        )
-        
-        trainer = run_training(
-            config, model,
-            X_train, X_val,
-            y_train, y_val,
-            fold=fold
-        )
-        
-        _, test_metrics = trainer.evaluate(X_test, y_test)
-        cv_metrics.append(test_metrics)
-        
-        if test_metrics['auc_roc'] > best_performance:
-            best_performance = test_metrics['auc_roc']
-            best_model = model
-    
-    avg_metrics = calculate_cv_statistics(cv_metrics)
-    print_cv_summary(avg_metrics)
-    
-    return best_model, avg_metrics

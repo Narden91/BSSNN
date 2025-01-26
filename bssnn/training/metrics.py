@@ -170,30 +170,3 @@ def find_optimal_threshold(
     return thresholds[optimal_idx] if len(thresholds) > optimal_idx else 0.5
 
 
-def calculate_uncertainty_metrics(
-    predictions: np.ndarray,
-    n_samples: int = 10
-) -> Dict[str, float]:
-    """Calculate uncertainty metrics for ensemble predictions.
-    
-    Args:
-        predictions: Array of shape (n_samples, n_instances) containing
-                   multiple predictions for each instance
-        n_samples: Number of Monte Carlo samples used
-        
-    Returns:
-        Dictionary containing uncertainty metrics
-    """
-    # Calculate mean and variance of predictions
-    mean_pred = np.mean(predictions, axis=0)
-    var_pred = np.var(predictions, axis=0)
-    
-    # Calculate epistemic and aleatoric uncertainty
-    epistemic = np.mean(var_pred)  # Between-sample variance
-    aleatoric = np.mean(mean_pred * (1 - mean_pred))  # Average predictive variance
-    
-    return {
-        'epistemic_uncertainty': epistemic,
-        'aleatoric_uncertainty': aleatoric,
-        'total_uncertainty': epistemic + aleatoric
-    }

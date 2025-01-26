@@ -39,29 +39,36 @@ class BSSNNTrainer:
             min_delta=early_stopping_min_delta
         )
         
-    def train_epoch(
-        self,
-        X_train: torch.Tensor,
-        y_train: torch.Tensor
-    ) -> float:
-        """Train for one epoch with regularization."""
-        self.model.train()
-        self.optimizer.zero_grad()
+    def train_epoch(self, X_train: torch.Tensor, y_train: torch.Tensor) -> float:
+        """Train for one epoch.
         
-        outputs = self.model(X_train).squeeze()
-        loss = self.criterion(outputs, y_train)
-        
-        # Add L2 regularization manually if not using optimizer's weight_decay
-        l2_lambda = 0.01
-        l2_reg = torch.tensor(0., requires_grad=True)
-        for param in self.model.parameters():
-            l2_reg = l2_reg + torch.norm(param, 2)
-        loss = loss + l2_lambda * l2_reg
-        
-        loss.backward()
-        self.optimizer.step()
-        
-        return loss.item()
+        Args:
+            X_train: Training features
+            y_train: Training labels
+            
+        Returns:
+            Training loss for this epoch
+        """
+        try:
+            self.model.train()
+            self.optimizer.zero_grad()  # Reset gradients
+            
+            outputs = self.model(X_train).squeeze()
+            loss = self.criterion(outputs, y_train)
+            loss_value = loss.item()
+            
+            # Backpropagation
+            loss.backward()
+            self.optimizer.step()  # Update weights
+            
+            # Clear unnecessary tensors
+            del outputs
+            torch.cuda.empty_cache()
+            
+            return loss_value
+        except RuntimeError as e:
+            print(f"Error during training: {str(e)}")
+            raise
     
     def train(
         self,

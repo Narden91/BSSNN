@@ -102,22 +102,28 @@ class StateSpaceBSSNN(nn.Module):
         Returns:
             Conditional probability P(y|X) as tensor of shape (batch_size, 1)
         """
-        # Joint probability computation P(y,X)
+        # Compute joint pathway
         joint = self._forward_pathway(
-            x, self.state_transitions_joint,
-            self.fc1_joint, self.dropout_joint,
-            self.batch_norm_joint, self.fc2_joint
+            x,
+            transitions=self.state_transitions_joint,
+            fc1=self.fc1_joint,
+            dropout=self.dropout_joint,
+            batch_norm=self.batch_norm_joint,
+            fc2=self.fc2_joint
         )
         
-        # Marginal probability computation P(X)
+        # Compute marginal pathway
         marginal = self._forward_pathway(
-            x, self.state_transitions_marginal,
-            self.fc1_marginal, self.dropout_marginal,
-            self.batch_norm_marginal, self.fc2_marginal
+            x,
+            transitions=self.state_transitions_marginal,
+            fc1=self.fc1_marginal,
+            dropout=self.dropout_marginal,
+            batch_norm=self.batch_norm_marginal,
+            fc2=self.fc2_marginal
         )
         
-        # Compute conditional probability P(y|X) = P(y,X) / P(X)
-        conditional = joint - marginal  # Log-space division
+        # Compute conditional probability
+        conditional = joint - marginal
         return self.sigmoid(conditional)
 
 

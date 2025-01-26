@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any
 from pathlib import Path
-import logging
+from rich import print 
 import yaml
 
 
@@ -15,16 +15,19 @@ class ValidationConfig:
 
 @dataclass
 class ModelConfig:
-    """Configuration for BSSNN model architecture."""
-    input_size: Optional[int] = None
-    hidden_size: Optional[int] = None
-    state_size: Optional[int] = 32  # New parameter
-    num_state_layers: int = 2       # New parameter
+    input_size: int
+    hidden_size: int
+    state_size: int = 32
+    num_state_layers: int = 2
     dropout_rate: float = 0.2
     weight_decay: float = 0.01
-    model_type: str = "bssnn"       # Can be "bssnn" or "state_space_bssnn"
+    model_type: str = "bssnn"
     early_stopping_patience: int = 10
     early_stopping_min_delta: float = 1e-4
+
+    def __post_init__(self):
+        if self.input_size <= 0 or self.hidden_size <= 0:
+            raise ValueError("input_size and hidden_size must be positive integers")
 
     def adapt_to_data(self, n_features: int):
         """Adapt model configuration to data dimensions."""
@@ -33,7 +36,7 @@ class ModelConfig:
             self.hidden_size = max(64, min(256, 2 * n_features))
         if self.state_size is None:
             self.state_size = max(32, self.hidden_size // 2)
-        logging.info(f"Setting hidden size to {self.hidden_size} and state size to {self.state_size}")
+        print(f"Setting hidden size to {self.hidden_size} and state size to {self.state_size}")
 
 
 @dataclass
@@ -101,7 +104,18 @@ class OutputConfig:
 
 
 class BSSNNConfig:
-    """Master configuration class for BSSNN system."""
+    """Master configuration class for BSSNN model system.
+    
+    This class manages all configuration aspects of the BSSNN model including:
+    - Model architecture parameters
+    - Training hyperparameters
+    - Data processing settings
+    - Explainability options
+    - Output and logging preferences
+    
+    The configuration can be loaded from a YAML file or created with default values.
+    It also handles directory setup and configuration validation.
+    """
     
     def __init__(
         self,

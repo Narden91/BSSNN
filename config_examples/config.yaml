@@ -5,7 +5,7 @@ model:
   num_state_layers: 2     # New parameter
   dropout_rate: 0.2
   weight_decay: 0.01
-  model_type: "bssnn"  # Use "bssnn" for original model, "state_space_bssnn"
+  model_type: "state_space_bssnn"  # Use "bssnn" for original model, "state_space_bssnn"
   early_stopping_patience: 10
   early_stopping_min_delta: 0.0001
 

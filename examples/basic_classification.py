@@ -14,42 +14,60 @@ from bssnn.utils.data_loader import DataLoader
 from bssnn.config.config import BSSNNConfig
 from bssnn.visualization.visualization import CrossValidationProgress, setup_rich_logging
 
+
 console = Console()
 
 def main(config_path: str):
     try:
+        # Create output directory
         output_dir = create_timestamped_dir("results")
         config = BSSNNConfig.from_yaml(config_path)
         
+        # Set up logging
+        setup_rich_logging(output_dir / "experiment.log")
+        console.print("\n[bold blue]Starting Classification Experiment[/bold blue]")
+        
+        # Load and prepare data
         data_loader = DataLoader()
         X, y = data_loader.prepare_data(config)
         
+        # Run cross-validation
         console.print("\n[bold blue]Running Cross-validation[/bold blue]")
         best_model, cv_metrics = run_cross_validation(config, X, y, output_dir)
         
-        _, _, X_test, _, _, y_test = data_loader.get_cross_validation_splits(X, y, config.data, fold=1)
-        
-        console.print("\n[bold blue]Final Model Performance on Test Set[/bold blue]")
-        best_model.eval()
-        with torch.no_grad():
-            test_preds = best_model(X_test).squeeze()
-            test_metrics = calculate_metrics(y_test, test_preds)
-            
-        for metric, value in test_metrics.items():
-            console.print(f"{metric}: {value:.4f}")
-        
-        if config.explainability.enabled:
+        # Generate explanations if enabled
+        if config.explainability.enabled and best_model is not None:
             console.print("\n[bold blue]Generating Model Explanations[/bold blue]")
             explanations_dir = output_dir / config.output.explanations_dir
-            run_explanations(config, best_model, X, X_test, save_dir=str(explanations_dir))
+            run_explanations(
+                config=config,
+                model=best_model,
+                X_train=X,  # Use full training data for explanations
+                X_val=X,    # Use full data for validation
+                save_dir=str(explanations_dir)
+            )
         
-        if config.output.save_model:
+        # Save the best model if requested
+        if config.output.save_model and best_model is not None:
             model_path = output_dir / config.output.model_dir / 'best_model.pt'
             model_path.parent.mkdir(parents=True, exist_ok=True)
-            torch.save(best_model.state_dict(), model_path)
+            
+            # Save model state and configuration
+            torch.save({
+                'model_state_dict': best_model.state_dict(),
+                'config': config,
+                'cv_metrics': cv_metrics
+            }, model_path)
+            
             console.print(f"\n[green]Model saved to:[/green] {model_path}")
+        elif config.output.save_model:
+            console.print("\n[yellow]No model to save as best_model is None.[/yellow]")
         
-        console.print("\n[green]Execution completed successfully![/green]")
+        # Save final configuration
+        config.save_final_config(output_dir)
+        
+        console.print("\n[green]Experiment completed successfully![/green]")
+        return best_model, cv_metrics
         
     except Exception as e:
         console.print(f"\n[red]Error during execution: {str(e)}[/red]")

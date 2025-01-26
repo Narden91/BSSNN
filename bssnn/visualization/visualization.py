@@ -235,20 +235,6 @@ class CrossValidationProgress:
         console.print(table)
 
 
-def print_cv_header(n_folds: int, dataset_sizes: Dict[str, int], total_epochs: int):
-    """Print initial cross-validation information."""
-    console = Console()
-    console.print("\n[bold blue]Cross-validation Configuration[/bold blue]")
-    console.print("=" * 80)
-    console.print(f"Number of folds: {n_folds}")
-    console.print(f"Total epochs per fold: {total_epochs}\n")
-    console.print("[bold]Dataset sizes:[/bold]")
-    console.print(f"Training samples:   {dataset_sizes['train']}")
-    console.print(f"Validation samples: {dataset_sizes['val']}")
-    console.print(f"Test samples:       {dataset_sizes['test']}")
-    console.print("=" * 80)
-
-
 def print_fold_start(fold: int, total_folds: int):
     """Print minimal fold header."""
     console = Console()
