@@ -20,6 +20,62 @@ class DataLoader:
         return X, y, n_features
     
     @staticmethod
+    def get_cross_validation_splits(X: torch.Tensor, y: torch.Tensor, config: 'DataConfig', fold: int):
+        """Generate train, validation, and test splits for cross-validation.
+        
+        Args:
+            X: Feature tensor
+            y: Target tensor
+            config: Data configuration
+            fold: Current fold number
+            
+        Returns:
+            Tuple of (X_train, X_val, X_test, y_train, y_val, y_test)
+        """
+        from sklearn.model_selection import KFold
+        from sklearn.preprocessing import StandardScaler
+        
+        # Convert tensors to numpy for sklearn operations
+        X_np = X.numpy()
+        y_np = y.numpy()
+        
+        # Create KFold splitter
+        kf = KFold(n_splits=config.validation.n_folds, shuffle=True, random_state=config.random_state)
+        
+        # Get indices for the specified fold
+        splits = list(kf.split(X_np))
+        train_idx, test_idx = splits[fold - 1]  # fold is 1-based
+        
+        # Split into train and test
+        X_train_fold = X_np[train_idx]
+        y_train_fold = y_np[train_idx]
+        X_test = X_np[test_idx]
+        y_test = y_np[test_idx]
+        
+        # Further split training data into train and validation
+        val_size = int(len(X_train_fold) * config.validation.val_size)
+        X_train = X_train_fold[:-val_size]
+        y_train = y_train_fold[:-val_size]
+        X_val = X_train_fold[-val_size:]
+        y_val = y_train_fold[-val_size:]
+        
+        # Scale features using only training data
+        scaler = StandardScaler()
+        X_train = scaler.fit_transform(X_train)
+        X_val = scaler.transform(X_val)
+        X_test = scaler.transform(X_test)
+        
+        # Convert back to tensors
+        return (
+            torch.tensor(X_train, dtype=torch.float32),
+            torch.tensor(X_val, dtype=torch.float32),
+            torch.tensor(X_test, dtype=torch.float32),
+            torch.tensor(y_train, dtype=torch.float32),
+            torch.tensor(y_val, dtype=torch.float32),
+            torch.tensor(y_test, dtype=torch.float32)
+        )
+    
+    @staticmethod
     def get_cross_validation_splits(
         X: torch.Tensor,
         y: torch.Tensor,

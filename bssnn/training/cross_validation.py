@@ -8,7 +8,8 @@ from ..model.bssnn import BSSNN
 from ..utils.data_loader import DataLoader
 from ..config.config import BSSNNConfig
 from ..training.trainer import run_training
-from ..visualization.visualization import print_cv_header, print_fold_start
+from ..visualization.visualization import CrossValidationProgress, print_cv_header, print_fold_start
+from bssnn.utils import data_loader
 
 console = Console()
 
@@ -86,7 +87,7 @@ def run_cross_validation(
     config: BSSNNConfig,
     X: torch.Tensor,
     y: torch.Tensor,
-    output_dir: Path
+    output_dir: Path,
 ) -> Tuple[Dict[str, Dict[str, float]], Optional[BSSNN]]:
     """Run cross-validation training with proper train/val/test splits.
     
@@ -100,29 +101,11 @@ def run_cross_validation(
         Tuple of (average metrics, final model if requested)
     """
     cv_metrics = []
-    n_folds = config.data.validation.n_folds
-    data_loader = DataLoader()
-    final_model = None
+    best_model = None
+    best_performance = float('-inf')
+    data_loader = DataLoader()  # Initialize DataLoader instance
     
-    # Get sample splits for first fold to show dataset sizes
-    splits = data_loader.get_cross_validation_splits(X, y, config.data, fold=1)
-    X_train, X_val, X_test = splits[:3]
-    
-    # Print initial configuration
-    print_cv_header(
-        n_folds=n_folds,
-        dataset_sizes={
-            'train': len(X_train),
-            'val': len(X_val),
-            'test': len(X_test)
-        },
-        total_epochs=config.training.num_epochs
-    )
-    
-    # Run cross-validation
-    for fold in range(1, n_folds + 1):
-        print_fold_start(fold, n_folds)
-        
+    for fold in range(1, config.data.validation.n_folds + 1):
         splits = data_loader.get_cross_validation_splits(X, y, config.data, fold)
         X_train, X_val, X_test, y_train, y_val, y_test = splits
         
@@ -135,26 +118,17 @@ def run_cross_validation(
             config, model,
             X_train, X_val,
             y_train, y_val,
-            fold=fold,
-            silent=True
+            fold=fold
         )
         
         _, test_metrics = trainer.evaluate(X_test, y_test)
         cv_metrics.append(test_metrics)
         
-        save_fold_metrics(test_metrics, fold, output_dir)
-        
-        # Add extra spacing after progress bar
-        console.print("\n[green]✓ Completed fold {}/{}[/green]\n".format(fold, n_folds))
-        
-        # if config.output.save_model and fold == n_folds:
-        #     final_model = model
-        if fold == n_folds:
-            final_model = model
+        if test_metrics['auc_roc'] > best_performance:
+            best_performance = test_metrics['auc_roc']
+            best_model = model
     
-    # Calculate and save summary statistics
     avg_metrics = calculate_cv_statistics(cv_metrics)
-    save_cv_summary(avg_metrics, output_dir)
     print_cv_summary(avg_metrics)
     
-    return avg_metrics, final_model
+    return best_model, avg_metrics

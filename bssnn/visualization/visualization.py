@@ -1,7 +1,14 @@
 import csv
 from pathlib import Path
 from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, TimeElapsedColumn, TextColumn, BarColumn
+from rich.progress import (
+    Progress,
+    SpinnerColumn,
+    TimeElapsedColumn,
+    TextColumn,
+    BarColumn,
+    TaskProgressColumn
+)
 from rich.table import Table
 from rich.panel import Panel
 from rich.text import Text
@@ -10,6 +17,9 @@ from datetime import datetime
 import logging
 import sys
 from typing import Any, Dict, List, Optional
+
+
+console = Console()
 
 
 def setup_rich_logging(log_path: Optional[str] = None):
@@ -47,27 +57,24 @@ def setup_rich_logging(log_path: Optional[str] = None):
 
 
 class TrainingProgress:
-    """Enhanced training progress visualization using Rich."""
+    """Training progress visualization using Rich."""
     
-    def __init__(self, total_epochs: int, display_metrics: List[str], results_dir: str = "results"):
+    def __init__(self, total_epochs: int, display_metrics: List[str], fold: Optional[int] = None):
         """Initialize the training progress tracker."""
         self.total_epochs = total_epochs
         self.display_metrics = display_metrics[:3]  # Limit to first 3 metrics for display
         self.start_time = datetime.now()
-        self.results_dir = Path(results_dir)
-        self.results_dir.mkdir(parents=True, exist_ok=True)
+        self.fold = fold
         self._setup_progress()
 
     def _setup_progress(self):
-        """Set up the progress display."""
-        self.console = Console(force_terminal=True)
-        
+        """Set up the progress display with improved layout."""
         # Define columns for progress display
         columns = [
+            SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
-            BarColumn(complete_style="green"),
-            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
-            TextColumn("Epoch: {task.fields[epoch]}/{task.fields[total_epochs]}"),
+            BarColumn(bar_width=40),
+            TaskProgressColumn(),
             TextColumn("Loss: {task.fields[loss]:.4f}")
         ]
         
@@ -79,20 +86,19 @@ class TrainingProgress:
             
         columns.append(TimeElapsedColumn())
         
-        self.progress = Progress(*columns, console=self.console)
+        self.progress = Progress(*columns, console=console, transient=True)
         
         # Initialize fields
         fields = {
-            'epoch': 0,
-            'total_epochs': self.total_epochs,
             'loss': 0.0
         }
         for metric in self.display_metrics:
             fields[metric] = 0.0
             
-        # Create task
+        # Create task with appropriate description
+        desc = "Training" if self.fold is None else f"Fold {self.fold}"
         self.task_id = self.progress.add_task(
-            description="Training:",
+            description=desc,
             total=self.total_epochs,
             **fields
         )
@@ -100,31 +106,22 @@ class TrainingProgress:
         self.progress.start()
     
     def update(self, epoch: int, loss: float, metrics: Dict[str, float]):
-        """Update and display the training progress."""
-        try:
-            # Prepare update fields
-            update_fields = {
-                'epoch': epoch,
-                'loss': loss
-            }
-            
-            # Update metric fields
-            for metric in self.display_metrics:
-                if metric in metrics:
-                    update_fields[metric] = metrics[metric]
-            
-            # Update progress
-            self.progress.update(
-                task_id=self.task_id,
-                completed=epoch,  # This updates the progress bar
-                **update_fields
-            )
-            
-            # Force refresh display
-            self.progress.refresh()
-            
-        except Exception as e:
-            print(f"Error updating progress: {str(e)}")
+        """Update progress display."""
+        update_fields = {
+            'loss': loss
+        }
+        
+        # Update metric fields
+        for metric in self.display_metrics:
+            if metric in metrics:
+                update_fields[metric] = metrics[metric]
+        
+        # Update progress
+        self.progress.update(
+            task_id=self.task_id,
+            completed=epoch,
+            **update_fields
+        )
 
     
     def _save_training_results(self, duration: datetime, final_loss: float, final_metrics: Dict[str, float]):
@@ -153,34 +150,89 @@ class TrainingProgress:
                 writer.writerow([metric, float(value)])
     
     def complete(self, final_loss: float, final_metrics: Dict[str, float]):
-        """Complete the progress tracking and display final results."""
-        try:
-            # Update final state
-            self.update(self.total_epochs, final_loss, final_metrics)
+        """Complete progress tracking with final metrics."""
+        self.progress.stop()
+        
+        if self.fold is not None:
+            console.print(f"[green]✓ Completed fold {self.fold}[/green]")
+        else:
+            self._display_final_metrics(final_loss, final_metrics)
+    
+    def _display_final_metrics(self, final_loss: float, final_metrics: Dict[str, float]):
+        """Display final metrics in a clean table format."""
+        table = Table(show_header=True, header_style="bold cyan")
+        table.add_column("Metric")
+        table.add_column("Value", justify="right")
+        
+        table.add_row("Loss", f"{final_loss:.4f}")
+        for metric, value in final_metrics.items():
+            table.add_row(metric, f"{value:.4f}")
+        
+        console.print("\n[bold]Final Results:[/bold]")
+        console.print(table)
+        
+
+class CrossValidationProgress:
+    """Progress tracking for cross-validation process."""
+    
+    def __init__(self, n_folds: int, dataset_sizes: Optional[Dict[str, int]] = None):
+        """Initialize cross-validation progress tracking."""
+        self.n_folds = n_folds
+        if dataset_sizes:
+            self._print_cv_header(dataset_sizes)
+    
+    def _print_cv_header(self, dataset_sizes: Dict[str, int]):
+        """Print initial cross-validation information."""
+        console.print("\n[bold blue]Cross-validation Configuration[/bold blue]")
+        
+        table = Table(show_header=False, box=None)
+        table.add_row("Number of folds", str(self.n_folds))
+        
+        if dataset_sizes:
+            if 'train' in dataset_sizes:
+                table.add_row("Training samples", str(dataset_sizes['train']))
+            if 'val' in dataset_sizes:
+                table.add_row("Validation samples", str(dataset_sizes['val']))
+            if 'test' in dataset_sizes:
+                table.add_row("Test samples", str(dataset_sizes['test']))
+        
+        console.print(table)
+        console.print()
+    
+    def start_fold(self, fold: int):
+        """Signal start of a new fold."""
+        console.print(f"\n[cyan]Starting fold {fold}/{self.n_folds}[/cyan]")
+    
+    def print_summary(self, metrics: Dict[str, Dict[str, float]], phase: str = "Cross-validation"):
+        """Print metrics summary with phase information."""
+        console.print(f"\n[bold blue]{phase} Results[/bold blue]")
+        
+        if isinstance(metrics.get(list(metrics.keys())[0]), dict):
+            # Cross-validation results with mean/std
+            table = Table(show_header=True, header_style="bold")
+            table.add_column("Metric")
+            table.add_column("Mean", justify="right")
+            table.add_column("Std", justify="right")
             
-            # Stop progress display
-            self.progress.stop()
+            for metric, stats in metrics.items():
+                table.add_row(
+                    metric,
+                    f"{stats['mean']:.4f}",
+                    f"{stats['std']:.4f}"
+                )
+        else:
+            # Single set of metrics
+            table = Table(show_header=True, header_style="bold")
+            table.add_column("Metric")
+            table.add_column("Value", justify="right")
             
-            # Calculate duration
-            duration = datetime.now() - self.start_time
-            
-            # Save results
-            self._save_training_results(duration, final_loss, final_metrics)
-            
-            # Display final summary
-            self.console.print("\n" + "="*75)
-            self.console.print("Training Results:")
-            self.console.print("-"*35)
-            self.console.print(f"Total time: {duration}")
-            self.console.print(f"Final loss: {float(final_loss):.4f}")
-            self.console.print("-"*35)
-            self.console.print("Final Metrics:")
-            
-            for metric, value in final_metrics.items():
-                self.console.print(f"{metric}: {float(value):.4f}")
-            
-        except Exception as e:
-            print(f"Error completing progress: {str(e)}")
+            for metric, value in metrics.items():
+                table.add_row(
+                    metric,
+                    f"{value:.4f}"
+                )
+        
+        console.print(table)
 
 
 def print_cv_header(n_folds: int, dataset_sizes: Dict[str, int], total_epochs: int):

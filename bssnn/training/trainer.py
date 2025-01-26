@@ -142,22 +142,21 @@ def run_training(
     Returns:
         Trained model trainer instance
     """
-    # Initialize trainer
     trainer = BSSNNTrainer(
         model=model,
         lr=config.training.learning_rate
     )
     
-    # Create progress tracker
+    # Create progress tracker with fold information
     progress = TrainingProgress(
         total_epochs=config.training.num_epochs,
-        display_metrics=config.training.display_metrics
+        display_metrics=config.training.display_metrics,
+        fold=fold
     )
     
     # Define progress callback
     def update_progress(epoch: int, loss: float, metrics: dict):
-        if not silent:
-            progress.update(epoch, loss, metrics)
+        progress.update(epoch, loss, metrics)
     
     # Train the model
     trainer.train(
@@ -169,10 +168,9 @@ def run_training(
         callback=update_progress
     )
     
-    # Complete progress if not in silent mode
-    if not silent:
-        _, final_metrics = trainer.evaluate(X_val, y_val)
-        progress.complete(trainer.early_stopping.best_loss, final_metrics)
+    # Complete progress
+    _, final_metrics = trainer.evaluate(X_val, y_val)
+    progress.complete(trainer.early_stopping.best_loss, final_metrics)
     
     return trainer
 
