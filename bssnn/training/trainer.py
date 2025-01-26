@@ -80,8 +80,6 @@ class BSSNNTrainer:
         callback = None
     ):
         """Train the model with early stopping and progress updates."""
-        best_val_loss = float('inf')
-        
         for epoch in range(epochs):
             # Training step
             train_loss = self.train_epoch(X_train, y_train)
@@ -89,17 +87,13 @@ class BSSNNTrainer:
             # Validation step
             val_loss, metrics = self.evaluate(X_val, y_val)
             
-            # Update best validation loss
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
-            
             # Call progress callback
             if callback:
                 callback(epoch + 1, val_loss, metrics)
             
-            # Check early stopping
+            # Early stopping check (no need to track best_val_loss)
             if self.early_stopping(self.model, val_loss):
-                if callback:  # Make sure we update the progress one last time
+                if callback:
                     callback(epoch + 1, val_loss, metrics)
                 print(f"\nEarly stopping triggered at epoch {epoch + 1}")
                 break
@@ -215,3 +209,10 @@ def run_final_model_training(config: BSSNNConfig, X, y, output_dir: Path):
         )
     
     return final_model
+
+
+def evaluate_on_test_set(model: BSSNN, X_test: torch.Tensor, y_test: torch.Tensor) -> Tuple[float, dict]:
+    """Evaluate model performance on the test set."""
+    trainer = BSSNNTrainer(model=model)
+    test_loss, test_metrics = trainer.evaluate(X_test, y_test)
+    return test_loss, test_metrics

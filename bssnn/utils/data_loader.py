@@ -12,6 +12,44 @@ from bssnn.config.config import BSSNNConfig, DataConfig
 
 class DataLoader:
     """Data loading and preparation class with cross-validation support."""
+    def split_data(
+        self,
+        X: torch.Tensor,
+        y: torch.Tensor,
+        test_size: float = 0.2,
+        random_state: int = None
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Split data into train+val and test sets.
+        
+        Args:
+            X: Full feature tensor
+            y: Full target tensor
+            test_size: Fraction of data to reserve for testing
+            random_state: Random seed for reproducibility
+            
+        Returns:
+            (X_train_val, X_test, y_train_val, y_test)
+        """
+        # Convert tensors to numpy for splitting
+        X_np = X.numpy()
+        y_np = y.numpy()
+        
+        # Perform stratified split
+        X_train_val, X_test, y_train_val, y_test = train_test_split(
+            X_np, y_np,
+            test_size=test_size,
+            stratify=y_np if self.data_config.validation.stratify else None,
+            random_state=random_state
+        )
+        
+        # Convert back to tensors (no scaling here to avoid double-processing)
+        return (
+            torch.tensor(X_train_val, dtype=torch.float32),
+            torch.tensor(X_test, dtype=torch.float32),
+            torch.tensor(y_train_val, dtype=torch.float32),
+            torch.tensor(y_test, dtype=torch.float32)
+        )
     
     @staticmethod
     def load_and_prepare_data(config: 'DataConfig') -> Tuple[torch.Tensor, torch.Tensor, int]:
@@ -94,7 +132,8 @@ class DataLoader:
         )
     
     def prepare_data(self, config: 'BSSNNConfig') -> tuple:
-        """Load and prepare data for training."""
+        """Load data and store configuration."""
+        self.data_config = config.data  # Track config for split_data
         X, y, n_features = self.load_and_prepare_data(config.data)
         config.model.adapt_to_data(n_features)
         return X, y

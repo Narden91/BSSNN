@@ -7,7 +7,7 @@ from rich import print
 from rich.console import Console
 from bssnn.utils.file_utils import create_timestamped_dir
 from bssnn.training.cross_validation import run_cross_validation
-from bssnn.training.trainer import run_final_model_training
+from bssnn.training.trainer import evaluate_on_test_set, run_final_model_training
 from bssnn.training.metrics import calculate_metrics
 from bssnn.explainability.explainer import run_explanations
 from bssnn.utils.data_loader import DataLoader
@@ -29,21 +29,41 @@ def main(config_path: str):
         
         # Load and prepare data
         data_loader = DataLoader()
-        X, y = data_loader.prepare_data(config)
+        X_full, y_full = data_loader.prepare_data(config)  # Required to set data_config
         
-        # Run cross-validation
+        # Split into train_val and test sets
+        X_train_val, X_test, y_train_val, y_test = data_loader.split_data(
+            X_full, y_full,
+            test_size=0.2,
+            random_state=config.data.random_state
+        )
+
+        # Run cross-validation on train+val data only
         console.print("\n[bold blue]Running Cross-validation[/bold blue]")
-        best_model, cv_metrics = run_cross_validation(config, X, y, output_dir)
+        best_model, cv_metrics, final_scaler = run_cross_validation(config, X_train_val, y_train_val, output_dir)
         
-        # Generate explanations if enabled
-        if config.explainability.enabled and best_model is not None:
+        X_test_scaled = torch.tensor(
+            final_scaler.transform(X_test.numpy()),  
+            dtype=torch.float32
+        )
+        
+        # Train final model on ALL train+val data (no validation split)
+        console.print("\n[bold blue]Training Final Model[/bold blue]")
+        final_model = run_final_model_training(config, X_train_val, y_train_val, output_dir)
+        
+        # Evaluate on test set
+        test_loss, test_metrics = evaluate_on_test_set(final_model, X_test, y_test)
+        console.print(f"\n[bold]Test Set Metrics:[/bold]\n{test_metrics}")
+        
+        # Generate explanations using TEST set
+        if config.explainability.enabled and final_model is not None:
             console.print("\n[bold blue]Generating Model Explanations[/bold blue]")
             explanations_dir = output_dir / config.output.explanations_dir
             run_explanations(
                 config=config,
-                model=best_model,
-                X_train=X,  # Use full training data for explanations
-                X_val=X,    # Use full data for validation
+                model=final_model,
+                X_train=X_train_val,  # Training data (no test leakage)
+                X_val=X_test,         # Explanations on test set
                 save_dir=str(explanations_dir)
             )
         

@@ -28,6 +28,10 @@ class CrossValidator:
         self.random_state = random_state
         self.scaler = StandardScaler()
         
+    def get_test_scaler(self):
+        """Retrieve the scaler fit on the full training data."""
+        return self.scaler
+        
     def _scale_features(self, X_train: np.ndarray, X_val: np.ndarray, X_test: Optional[np.ndarray]) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
         """Scale features using only training data statistics.
         
@@ -149,7 +153,8 @@ def run_cross_validation(
     avg_metrics = calculate_cv_statistics(cv_metrics)
     progress.print_summary(avg_metrics)
     
-    return best_model, avg_metrics
+    return best_model, avg_metrics, cv.get_test_scaler()
+
 
 def calculate_cv_statistics(cv_metrics: List[Dict[str, float]]) -> Dict[str, Dict[str, float]]:
     """Calculate mean and standard deviation for metrics across folds.

@@ -71,10 +71,14 @@ def calculate_recall(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     return true_positives / actual_positives if actual_positives > 0 else 0.0
 
 
-def calculate_f1_score(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+def calculate_f1_score(y_true: np.ndarray, y_pred: np.ndarray, handle_undefined: str = 'zero') -> float:
     """Calculate F1 score."""
     precision = calculate_precision(y_true, y_pred)
     recall = calculate_recall(y_true, y_pred)
+    if (precision + recall) == 0:
+        if handle_undefined == 'nan':
+            return np.nan
+        return 0.0
     return 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0.0
 
 
@@ -139,7 +143,8 @@ def calculate_predictive_entropy(y_pred: np.ndarray) -> float:
     Higher values indicate more uncertainty.
     """
     # Ensure predictions are properly bounded
-    y_pred = np.clip(y_pred, 1e-15, 1 - 1e-15)
+    eps = np.finfo(y_pred.dtype).eps  
+    y_pred = np.clip(y_pred, eps, 1 - eps)
     
     # Calculate entropy for binary predictions
     return -np.mean(y_pred * np.log(y_pred) + (1 - y_pred) * np.log(1 - y_pred))
@@ -162,11 +167,13 @@ def find_optimal_threshold(
     """
     precision, recall, thresholds = precision_recall_curve(y_true, y_pred)
     
-    # Calculate F-beta score for each threshold
-    f_scores = (1 + beta**2) * (precision * recall) / (beta**2 * precision + recall + 1e-7)
+    # Remove last elements to align with thresholds
+    precision = precision[:-1]
+    recall = recall[:-1]
     
-    # Find threshold that maximizes F-beta score
+    # Calculate F-scores with aligned arrays
+    f_scores = (1 + beta**2) * (precision * recall) / (beta**2 * precision + recall + 1e-7)
     optimal_idx = np.argmax(f_scores)
-    return thresholds[optimal_idx] if len(thresholds) > optimal_idx else 0.5
+    return thresholds[optimal_idx]
 
 

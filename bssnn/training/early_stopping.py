@@ -38,3 +38,10 @@ class EarlyStopping:
                     model.load_state_dict(self.best_weights)
                 return True
         return False
+    
+    def reset(self):
+        """Reset all tracking variables for reuse."""
+        self.best_loss = float('inf')
+        self.best_weights = None
+        self.counter = 0
+        self.early_stop = False
