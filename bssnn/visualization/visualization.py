@@ -159,18 +159,37 @@ class TrainingProgress:
             self._display_final_metrics(final_loss, final_metrics)
     
     def _display_final_metrics(self, final_loss: float, final_metrics: Dict[str, float]):
-        """Display final metrics in a clean table format."""
-        table = Table(show_header=True, header_style="bold cyan")
-        table.add_column("Metric")
+        """Display final metrics in a clean table format with consistent ordering."""
+        
+        # create a space
+        console.print()
+        
+        table = Table(show_header=True, header_style="bold cyan", box=None)
+        table.add_column("Metric", style="cyan", no_wrap=True)
         table.add_column("Value", justify="right")
-        
-        table.add_row("Loss", f"{final_loss:.4f}")
-        for metric, value in final_metrics.items():
-            table.add_row(metric, f"{value:.4f}")
-        
-        console.print("\n[bold]Final Results:[/bold]")
-        console.print(table)
-        
+
+        # Define metric display order and formatting
+        metric_order = [
+            ('Loss', f'{final_loss:.4f}'),
+            ('Accuracy', final_metrics.get('accuracy', 0)),
+            ('Precision', final_metrics.get('precision', 0)),
+            ('Recall', final_metrics.get('recall', 0)),
+            ('F1 Score', final_metrics.get('f1_score', 0)),
+            ('AUC-ROC', final_metrics.get('auc_roc', 0)),
+            ('Avg Precision', final_metrics.get('average_precision', 0)),
+            ('Calibration Error', final_metrics.get('calibration_error', 0)),
+            ('ECE', final_metrics.get('expected_calibration_error', 0)),
+            ('Predictive Entropy', final_metrics.get('predictive_entropy', 0)),
+            ('Optimal Threshold', final_metrics.get('optimal_threshold', 0))
+        ]
+
+        for name, value in metric_order:
+            if name == 'Loss':
+                table.add_row(name, f'[bold]{value}[/bold]')
+            else:
+                table.add_row(name, f'{float(value):.4f}')
+
+        console.print(Panel(table, title="[bold green]Final Training Results[/bold green]", expand=False))
 
 class CrossValidationProgress:
     """Progress tracking for cross-validation process."""
@@ -286,3 +305,40 @@ class ExplainerProgress:
             execute_step(step)
             self.update(step)
         self.stop()
+        
+        
+def print_test_metrics(test_loss: float, test_metrics: Dict[str, float]) -> None:
+    """Print test set metrics in a consistent formatted table.
+    
+    Args:
+        test_loss: Loss value on test set
+        test_metrics: Dictionary of test metrics
+    """
+    table = Table(show_header=True, header_style="bold cyan", box=None)
+    table.add_column("Metric", style="cyan", no_wrap=True)
+    table.add_column("Value", justify="right")
+
+    metric_order = [
+        ('Loss', test_loss),
+        ('Accuracy', test_metrics.get('accuracy', 0)),
+        ('Precision', test_metrics.get('precision', 0)),
+        ('Recall', test_metrics.get('recall', 0)),
+        ('F1 Score', test_metrics.get('f1_score', 0)),
+        ('AUC-ROC', test_metrics.get('auc_roc', 0)),
+        ('Avg Precision', test_metrics.get('average_precision', 0)),
+        ('Calibration Error', test_metrics.get('calibration_error', 0)),
+        ('ECE', test_metrics.get('expected_calibration_error', 0)),
+        ('Predictive Entropy', test_metrics.get('predictive_entropy', 0)),
+        ('Optimal Threshold', test_metrics.get('optimal_threshold', 0))
+    ]
+
+    for name, value in metric_order:
+        if name == 'Loss':
+            table.add_row(name, f'[bold]{float(value):.4f}[/bold]')
+        else:
+            table.add_row(name, f'{float(value):.4f}')
+
+    console.print(Panel(table, 
+                        title="[bold green]Test Set Metrics[/bold green]", 
+                        expand=False,
+                        padding=(1, 4)))

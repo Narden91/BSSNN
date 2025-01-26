@@ -12,7 +12,7 @@ from bssnn.training.metrics import calculate_metrics
 from bssnn.explainability.explainer import run_explanations
 from bssnn.utils.data_loader import DataLoader
 from bssnn.config.config import BSSNNConfig
-from bssnn.visualization.visualization import CrossValidationProgress, setup_rich_logging
+from bssnn.visualization.visualization import CrossValidationProgress, print_test_metrics, setup_rich_logging
 
 
 console = Console()
@@ -53,7 +53,7 @@ def main(config_path: str):
         
         # Evaluate on test set
         test_loss, test_metrics = evaluate_on_test_set(final_model, X_test, y_test)
-        console.print(f"\n[bold]Test Set Metrics:[/bold]\n{test_metrics}")
+        print_test_metrics(test_loss, test_metrics)
         
         # Generate explanations using TEST set
         if config.explainability.enabled and final_model is not None:
