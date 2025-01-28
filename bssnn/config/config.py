@@ -50,18 +50,30 @@ class TrainingConfig:
 
 @dataclass
 class DataConfig:
-    """Configuration for data handling."""
+    """Configuration for data handling with enhanced column exclusion support."""
     input_path: Optional[str] = None
     feature_columns: Optional[List[str]] = None
     target_column: Optional[str] = None
+    exclude_columns: Optional[List[str]] = field(default_factory=list)  # New field for columns to exclude
     validation: ValidationConfig = field(default_factory=ValidationConfig)
     random_state: int = 42
     
-    # Synthetic data parameters (used if input_path is None)
+    # Synthetic data parameters
     synthetic_samples: int = 1000
-    synthetic_features: Optional[int] = None  # Will match model input_size if not specified
-    synthetic_informative: Optional[int] = None  # Will be calculated as 50% of features
-    synthetic_redundant: Optional[int] = None  # Will be calculated as 20% of features
+    synthetic_features: Optional[int] = None
+    synthetic_informative: Optional[int] = None
+    synthetic_redundant: Optional[int] = None
+
+    def __post_init__(self):
+        """Validate and process configuration after initialization."""
+        # Convert single exclude column to list if needed
+        if isinstance(self.exclude_columns, str):
+            self.exclude_columns = [self.exclude_columns]
+        elif self.exclude_columns is None:
+            self.exclude_columns = []
+            
+        # Ensure exclude_columns is always a list
+        self.exclude_columns = list(self.exclude_columns)
 
     def adapt_synthetic_params(self, n_features: Optional[int] = None):
         """Adapt synthetic data parameters based on feature count."""
