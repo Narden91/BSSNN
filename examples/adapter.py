@@ -45,6 +45,38 @@ class HandwritingDataAdapter:
             return df
         except Exception as e:
             raise RuntimeError(f"Error loading data from {self.data_path}: {str(e)}")
+        
+    def _validate_and_get_columns(self, df: pd.DataFrame) -> tuple[str, list[str]]:
+        """Validate and determine target and feature columns.
+        
+        Args:
+            df: Input DataFrame
+            
+        Returns:
+            Tuple of (target column name, list of feature column names)
+            
+        Raises:
+            ValueError: If column validation fails
+        """
+        # Get target column
+        target_col = self.config.data.target_column
+        if target_col not in df.columns:
+            raise ValueError(f"Target column '{target_col}' not found")
+            
+        # Get columns to exclude
+        exclude_cols = set(self.config.data.exclude_columns or [])
+        exclude_cols.add(target_col)  # Always exclude target column
+        
+        # Get feature columns
+        feature_cols = [col for col in df.columns if col not in exclude_cols]
+        
+        print(f"\n[Debug] Column Selection:")
+        print(f"Target column: {target_col}")
+        print(f"Excluded columns: {exclude_cols}")
+        print(f"Number of feature columns: {len(feature_cols)}")
+        print(f"Feature columns: {feature_cols}")
+        
+        return target_col, feature_cols
     
     def preprocess_data(self, df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
         """Preprocess the handwriting data for BSSNN.
@@ -57,29 +89,17 @@ class HandwritingDataAdapter:
         """
         print("\n[Debug] Starting data preprocessing")
         
-        # Get target column
-        target_col = 'Label' if 'Label' in df.columns else df.columns[-1]
+        # Validate and get columns
+        target_col, feature_cols = self._validate_and_get_columns(df)
         
-        # Get columns to exclude
-        exclude_cols = set(self.config.data.exclude_columns or [])
-        
-        # Generate feature columns, excluding target and specified columns
-        feature_cols = [col for col in df.columns 
-                       if col != target_col and col not in exclude_cols]
-        
-        print(f"\n[Debug] Column Selection:")
-        print(f"Target column: {target_col}")
-        print(f"Excluded columns: {exclude_cols}")
-        print(f"Selected feature columns: {feature_cols}")
-        
-        print(f"\n[Debug] Target column: {target_col}")
-        print(f"Number of features: {len(feature_cols)}")
+        # Store feature names for later use
+        self.feature_names = feature_cols
         
         # Extract features and labels
         X = df[feature_cols].values
         y = df[target_col].values
         
-        print("\n[Debug] Before preprocessing:")
+        print("\n[Debug] Data shapes:")
         print(f"X shape: {X.shape}")
         print(f"y shape: {y.shape}")
         print(f"y unique values: {np.unique(y)}")
@@ -90,31 +110,18 @@ class HandwritingDataAdapter:
         # Encode labels
         y_encoded = self.label_encoder.fit_transform(y)
         
-        print("\n[Debug] After preprocessing:")
-        print(f"X_scaled shape: {X_scaled.shape}")
-        print(f"X_scaled range: [{X_scaled.min()}, {X_scaled.max()}]")
-        print(f"y_encoded unique values: {np.unique(y_encoded)}")
-        
         return X_scaled, y_encoded
     
     def prepare_data_for_bssnn(self) -> Dict[str, Any]:
-        """Prepare data in format suitable for BSSNN model.
-        
-        Returns:
-            Dictionary containing:
-                - X_train, X_val, X_test: Feature tensors
-                - y_train, y_val, y_test: Label tensors
-                - feature_names: List of feature names
-                - class_names: List of class names
-        """
+        """Prepare data in format suitable for BSSNN model."""
         print("\n[Debug] Starting data preparation for BSSNN")
         
         # Load and preprocess data
         df = self.load_data()
         X, y = self.preprocess_data(df)
         
-        # Split data into train, validation, and test sets
-        X_temp, X_test, y_temp, y_test = train_test_split(
+        # Split data
+        X_train, X_test, y_train, y_test = train_test_split(
             X, y,
             test_size=0.2,
             stratify=y,
@@ -122,13 +129,13 @@ class HandwritingDataAdapter:
         )
         
         X_train, X_val, y_train, y_val = train_test_split(
-            X_temp, y_temp,
+            X_train, y_train,
             test_size=0.2,
-            stratify=y_temp,
+            stratify=y_train,
             random_state=self.config.data.random_state
         )
         
-        # Convert to tensors
+        # Prepare return dictionary
         data = {
             'X_train': torch.FloatTensor(X_train),
             'X_val': torch.FloatTensor(X_val),
@@ -136,15 +143,14 @@ class HandwritingDataAdapter:
             'y_train': torch.FloatTensor(y_train),
             'y_val': torch.FloatTensor(y_val),
             'y_test': torch.FloatTensor(y_test),
-            'feature_names': [col for col in df.columns if col != 'Label'],
+            'feature_names': self.feature_names,
             'class_names': self.label_encoder.classes_.tolist()
         }
         
-        print("\n[Debug] Final dataset statistics:")
-        print(f"Training set size: {len(data['X_train'])}")
-        print(f"Validation set size: {len(data['X_val'])}")
-        print(f"Test set size: {len(data['X_test'])}")
-        print(f"Number of features: {data['X_train'].shape[1]}")
-        print(f"Number of classes: {len(data['class_names'])}")
+        print("\n[Debug] Dataset preparation complete:")
+        print(f"Number of features: {len(self.feature_names)}")
+        print(f"Training samples: {len(data['X_train'])}")
+        print(f"Validation samples: {len(data['X_val'])}")
+        print(f"Test samples: {len(data['X_test'])}")
         
         return data

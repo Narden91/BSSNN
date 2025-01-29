@@ -3,15 +3,25 @@ from ..config.config import BSSNNConfig
 from ..model.bssnn import BSSNN
 from ..model.state_space_bssnn import StateSpaceBSSNN
 
+
 def create_model(config: BSSNNConfig) -> nn.Module:
     """Create appropriate model based on configuration.
     
     Args:
-        config: Training configuration
+        config: Training configuration containing model parameters
         
     Returns:
         Initialized model instance
+        
+    Raises:
+        ValueError: If input_size is not set or invalid
     """
+    if config.model.input_size is None:
+        raise ValueError(
+            "Model input_size must be set before creating model. "
+            "Use config.model.adapt_to_data() to set input size based on data."
+        )
+        
     if config.model.model_type.lower() == "state_space_bssnn":
         return StateSpaceBSSNN(
             input_size=config.model.input_size,

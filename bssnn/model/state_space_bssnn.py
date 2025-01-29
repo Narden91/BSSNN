@@ -1,4 +1,5 @@
 from typing import Tuple
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -20,6 +21,7 @@ class StateSpaceBSSNN(nn.Module):
         """
         super(StateSpaceBSSNN, self).__init__()
         
+        self.input_size = input_size
         self.hidden_size = hidden_size
         self.state_size = state_size
         self.num_state_layers = num_state_layers
@@ -44,8 +46,8 @@ class StateSpaceBSSNN(nn.Module):
         self.batch_norm_marginal = nn.BatchNorm1d(hidden_size)
         self.fc2_marginal = nn.Linear(hidden_size, 1)
         
-        # Final activation
-        self.sigmoid = nn.Sigmoid()
+        # Activation functions
+        self.sigmoid = nn.Sigmoid()  # Add sigmoid layer as a module attribute
         
         # Initialize weights
         self._init_weights()
@@ -55,7 +57,8 @@ class StateSpaceBSSNN(nn.Module):
         for module in self.modules():
             if isinstance(module, nn.Linear):
                 nn.init.xavier_normal_(module.weight)
-                nn.init.constant_(module.bias, 0)
+                if module.bias is not None:
+                    nn.init.constant_(module.bias, 0)
     
     def _forward_pathway(self, x: torch.Tensor, 
                         transitions: nn.ModuleList,
@@ -100,7 +103,7 @@ class StateSpaceBSSNN(nn.Module):
             x: Input tensor of shape (batch_size, input_size)
             
         Returns:
-            Conditional probability P(y|X) as tensor of shape (batch_size, 1)
+            Conditional probability P(y|X) as tensor of shape (batch_size,)
         """
         # Compute joint pathway
         joint = self._forward_pathway(
@@ -124,7 +127,36 @@ class StateSpaceBSSNN(nn.Module):
         
         # Compute conditional probability
         conditional = joint - marginal
-        return self.sigmoid(conditional)
+        prob = self.sigmoid(conditional)
+        
+        # Ensure outputs are properly bounded
+        prob = torch.clamp(prob, min=1e-7, max=1-1e-7)
+        
+        return prob.squeeze(-1)
+    
+    def _get_feature_importance(self) -> np.ndarray:
+        """Calculate feature importance based on network weights.
+        
+        The importance is calculated by combining the absolute values of weights
+        from both joint and marginal pathways' first layers, which directly 
+        connect to input features.
+        
+        Returns:
+            Array of feature importance scores
+        """
+        # Get weights from first layers of both pathways
+        joint_weights = self.fc1_joint.weight.detach().cpu().numpy()
+        marginal_weights = self.fc1_marginal.weight.detach().cpu().numpy()
+        
+        # Calculate importance as mean absolute weight values
+        joint_importance = np.abs(joint_weights).mean(axis=0)
+        marginal_importance = np.abs(marginal_weights).mean(axis=0)
+        
+        # Combine importance scores from both pathways
+        total_importance = joint_importance + marginal_importance
+        
+        # Normalize to sum to 1
+        return total_importance / total_importance.sum()
 
 
 class StateTransitionLayer(nn.Module):

@@ -15,7 +15,23 @@ class ValidationConfig:
 
 @dataclass
 class ModelConfig:
-    input_size: int
+    """Configuration for BSSNN model architecture.
+    
+    This class defines the model architecture parameters with validation for each field.
+    The input_size can be None initially and set later based on data dimensions.
+    
+    Attributes:
+        input_size: Number of input features (can be None initially)
+        hidden_size: Size of hidden layers
+        state_size: Dimension of state space
+        num_state_layers: Number of state transition layers
+        dropout_rate: Dropout probability
+        weight_decay: L2 regularization factor
+        model_type: Type of BSSNN model ("bssnn" or "state_space_bssnn")
+        early_stopping_patience: Number of epochs to wait before early stopping
+        early_stopping_min_delta: Minimum change in validation loss for early stopping
+    """
+    input_size: Optional[int]
     hidden_size: int
     state_size: int = 32
     num_state_layers: int = 2
@@ -26,17 +42,53 @@ class ModelConfig:
     early_stopping_min_delta: float = 1e-4
 
     def __post_init__(self):
-        if self.input_size <= 0 or self.hidden_size <= 0:
-            raise ValueError("input_size and hidden_size must be positive integers")
+        """Validate configuration parameters after initialization.
+        
+        Raises:
+            ValueError: If any parameter is invalid
+        """
+        # Validate input_size if provided
+        if self.input_size is not None and self.input_size <= 0:
+            raise ValueError("input_size must be positive when specified")
 
+        # Validate other required parameters
+        if self.hidden_size <= 0:
+            raise ValueError("hidden_size must be positive")
+            
+        if self.state_size <= 0:
+            raise ValueError("state_size must be positive")
+            
+        if self.num_state_layers <= 0:
+            raise ValueError("num_state_layers must be positive")
+            
+        if not (0 <= self.dropout_rate <= 1):
+            raise ValueError("dropout_rate must be between 0 and 1")
+            
+        if self.weight_decay < 0:
+            raise ValueError("weight_decay must be non-negative")
+            
+        if self.early_stopping_patience <= 0:
+            raise ValueError("early_stopping_patience must be positive")
+            
+        if self.early_stopping_min_delta <= 0:
+            raise ValueError("early_stopping_min_delta must be positive")
+            
+        if self.model_type not in ["bssnn", "state_space_bssnn"]:
+            raise ValueError("model_type must be either 'bssnn' or 'state_space_bssnn'")
+    
     def adapt_to_data(self, n_features: int):
-        """Adapt model configuration to data dimensions."""
+        """Adapt model configuration to data dimensions.
+        
+        Args:
+            n_features: Number of input features from the data
+            
+        Raises:
+            ValueError: If n_features is invalid
+        """
+        if n_features <= 0:
+            raise ValueError("Number of features must be positive")
+            
         self.input_size = n_features
-        if self.hidden_size is None:
-            self.hidden_size = max(64, min(256, 2 * n_features))
-        if self.state_size is None:
-            self.state_size = max(32, self.hidden_size // 2)
-        print(f"Setting hidden size to {self.hidden_size} and state size to {self.state_size}")
 
 
 @dataclass

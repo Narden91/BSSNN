@@ -43,7 +43,7 @@ class LogitModelWrapper(torch.nn.Module):
         raise ValueError("Unsupported model type")
 
 class BSSNNExplainer:
-    """Enhanced explainer for BSSNN architectures with state-space support."""
+    """Explainer for BSSNN architectures with state-space support."""
     
     def __init__(self, model: torch.nn.Module, feature_names: Optional[List[str]] = None):
         self.model = model

@@ -1,18 +1,18 @@
 model:
   input_size: null
   hidden_size: 128
-  state_size: 32          # New parameter
+  state_size: 64          # New parameter
   num_state_layers: 2     # New parameter
   dropout_rate: 0.3
-  weight_decay: 0.01
+  weight_decay: 0.001
   model_type: "state_space_bssnn"  # Use "bssnn" for original model, "state_space_bssnn"
-  early_stopping_patience: 10
-  early_stopping_min_delta: 0.0001
+  early_stopping_patience: 30
+  early_stopping_min_delta: 0.001
 
 training:
-  num_epochs: 100
-  batch_size: 32
-  learning_rate: 0.0001
+  num_epochs: 200
+  batch_size: 64
+  learning_rate: 0.001
   display_metrics:
     - accuracy
     - f1_score
