@@ -16,7 +16,7 @@ from rich.logging import RichHandler
 from datetime import datetime
 import logging
 import sys
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 
 console = Console()
@@ -85,13 +85,24 @@ class TrainingProgress:
         
         self.progress.start()
     
-    def update(self, epoch: int, loss: float, metrics: Dict[str, float]):
-        """Update progress display."""
-        update_fields = {
-            'loss': loss
-        }
+    def update(self, epoch: int, loss: Union[float, Dict[str, float]], metrics: Dict[str, float]):
+        """Update progress with flexible loss handling.
         
-        # Update metric fields
+        Args:
+            epoch: Current epoch number
+            loss: Loss value as float or dictionary containing loss components
+            metrics: Dictionary of evaluation metrics
+        """
+        # Handle loss value
+        update_fields = {}
+        if isinstance(loss, dict):
+            update_fields['loss'] = loss.get('main_loss', 0.0)
+            if 'consistency_loss' in loss:
+                update_fields['consistency_loss'] = loss['consistency_loss']
+        else:
+            update_fields['loss'] = float(loss)
+        
+        # Add metrics to update fields
         for metric in self.display_metrics:
             if metric in metrics:
                 update_fields[metric] = metrics[metric]
@@ -287,19 +298,28 @@ class ExplainerProgress:
         self.stop()
         
         
-def print_test_metrics(test_loss: float, test_metrics: Dict[str, float]) -> None:
-    """Print test set metrics in a consistent formatted table.
+def print_test_metrics(test_loss: Union[float, Dict[str, float]], test_metrics: Dict[str, float]) -> None:
+    """Print test set metrics in a formatted table with proper loss handling.
     
     Args:
-        test_loss: Loss value on test set
+        test_loss: Loss value as float or dictionary
         test_metrics: Dictionary of test metrics
     """
     table = Table(show_header=True, header_style="bold cyan", box=None)
     table.add_column("Metric", style="cyan", no_wrap=True)
     table.add_column("Value", justify="right")
 
+    # Handle loss value
+    if isinstance(test_loss, dict):
+        main_loss = test_loss.get('main_loss', 0.0)
+        table.add_row('Main Loss', f'[bold]{main_loss:.4f}[/bold]')
+        if 'consistency_loss' in test_loss:
+            table.add_row('Consistency Loss', f'{test_loss["consistency_loss"]:.4f}')
+    else:
+        table.add_row('Loss', f'[bold]{float(test_loss):.4f}[/bold]')
+
+    # Add other metrics
     metric_order = [
-        ('Loss', test_loss),
         ('Accuracy', test_metrics.get('accuracy', 0)),
         ('Precision', test_metrics.get('precision', 0)),
         ('Recall', test_metrics.get('recall', 0)),
@@ -313,32 +333,43 @@ def print_test_metrics(test_loss: float, test_metrics: Dict[str, float]) -> None
     ]
 
     for name, value in metric_order:
-        if name == 'Loss':
-            table.add_row(name, f'[bold]{float(value):.4f}[/bold]')
-        else:
+        if isinstance(value, (int, float)):
             table.add_row(name, f'{float(value):.4f}')
 
     console.print(Panel(table, 
-                        title="[bold green]Test Set Metrics[/bold green]", 
-                        expand=False,
-                        padding=(1, 4)))
+                       title="[bold green]Test Set Metrics[/bold green]", 
+                       expand=False,
+                       padding=(1, 4)))
     
 
-def save_metrics_to_csv(metrics: Dict[str, Any], filename: Path):
-    """Save metrics dictionary to CSV file."""
+def save_metrics_to_csv(metrics: Dict[str, Any], filename: Path) -> None:
+    """Save metrics to CSV with proper handling of different metric formats.
+    
+    Args:
+        metrics: Dictionary containing metrics to save
+        filename: Path where to save the CSV file
+    """
     filename.parent.mkdir(parents=True, exist_ok=True)
     
-    if isinstance(metrics, dict) and any(isinstance(v, dict) for v in metrics.values()):
-        # Cross-validation style metrics with mean/std
-        with open(filename, 'w', newline='') as f:
-            writer = csv.writer(f)
+    with open(filename, 'w', newline='') as f:
+        writer = csv.writer(f)
+        
+        # Check if we have cross-validation metrics (dict with mean/std)
+        first_value = next(iter(metrics.values()))
+        is_cv_metrics = isinstance(first_value, dict) and 'mean' in first_value
+        
+        if is_cv_metrics:
+            # Handle cross-validation metrics
             writer.writerow(['Metric', 'Mean', 'Std'])
             for metric, values in metrics.items():
                 writer.writerow([metric, values['mean'], values['std']])
-    else:
-        # Regular metrics
-        with open(filename, 'w', newline='') as f:
-            writer = csv.writer(f)
+        else:
+            # Handle regular metrics
             writer.writerow(['Metric', 'Value'])
             for metric, value in metrics.items():
-                writer.writerow([metric, value])
+                if isinstance(value, dict):
+                    # Handle dictionary loss values
+                    for submetric, subvalue in value.items():
+                        writer.writerow([f"{metric}_{submetric}", subvalue])
+                else:
+                    writer.writerow([metric, value])

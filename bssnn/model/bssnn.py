@@ -88,8 +88,8 @@ class BSSNN(nn.Module):
             Tuple of (conditional probabilities, additional outputs)
         """
         # Compute log probabilities
-        log_joint = self.joint_network(x)  # Shape: (batch_size, 2)
-        log_marginal = self.marginal_network(x)  # Shape: (batch_size, 1)
+        log_joint = self.joint_network(x)
+        log_marginal = self.marginal_network(x)
         
         # Compute consistency loss during training
         consistency_loss = self.compute_consistency_loss(log_joint, log_marginal)

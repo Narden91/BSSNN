@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from typing import Tuple, Optional
+from typing import Dict, Tuple, Optional, Union
 from pathlib import Path
 from rich import print
 
@@ -25,7 +25,8 @@ class BSSNNTrainer:
         lr: float = 0.001,
         weight_decay: float = 0.01,
         early_stopping_patience: int = 10,
-        early_stopping_min_delta: float = 1e-4
+        early_stopping_min_delta: float = 1e-4,
+        consistency_weight: float = 0.1 
     ):
         self.model = model
         self.criterion = criterion or nn.BCELoss()
@@ -38,7 +39,21 @@ class BSSNNTrainer:
             patience=early_stopping_patience,
             min_delta=early_stopping_min_delta
         )
+        self.consistency_weight = consistency_weight
+    
+    def calculate_total_loss(self, outputs, targets, additional_outputs=None):
+        """Calculate total loss including consistency if available."""
+        main_loss = self.criterion(outputs, targets)
         
+        if additional_outputs and 'consistency_loss' in additional_outputs:
+            consistency_loss = additional_outputs['consistency_loss']
+            return main_loss + self.consistency_weight * consistency_loss, {
+                'main_loss': main_loss.item(),
+                'consistency_loss': consistency_loss.item()
+            }
+        
+        return main_loss, {'main_loss': main_loss.item()}
+    
     def train_epoch(self, X_train: torch.Tensor, y_train: torch.Tensor) -> float:
         """Train for one epoch with enhanced validation and debugging.
         
@@ -52,39 +67,22 @@ class BSSNNTrainer:
         try:
             self.model.train()
             self.optimizer.zero_grad()
-            
-            # Validate input data
-            assert torch.all((y_train >= 0) & (y_train <= 1)), "Labels must be between 0 and 1"
-            
+
             # Forward pass
             model_output = self.model(X_train)
-            
-            # Handle both tuple output (new model) and tensor output (old model)
-            if isinstance(model_output, tuple):
-                outputs, additional_outputs = model_output
-                consistency_loss = additional_outputs['consistency_loss']
-            else:
-                outputs = model_output
-                consistency_loss = 0.0
-            
-            # Ensure outputs are properly bounded
-            if not torch.all((outputs >= 0) & (outputs <= 1)):
-                raise ValueError("Model outputs must be between 0 and 1")
-            
-            # Calculate loss with consistency regularization
-            main_loss = self.criterion(outputs, y_train)
-            total_loss = main_loss + 0.1 * consistency_loss  # Weight for consistency loss
-            loss_value = total_loss.item()
-            
+            outputs, additional_outputs = (model_output if isinstance(model_output, tuple)
+                                        else (model_output, None))
+
+            # Calculate total loss
+            total_loss, loss_dict = self.calculate_total_loss(
+                outputs, y_train, additional_outputs
+            )
+
             # Backpropagation
             total_loss.backward()
             self.optimizer.step()
-            
-            # Clear memory
-            del outputs, model_output
-            torch.cuda.empty_cache()
-            
-            return loss_value
+
+            return loss_dict
             
         except Exception as e:
             print(f"\n[Debug] Error in train_epoch:")
@@ -113,44 +111,53 @@ class BSSNNTrainer:
             if callback:
                 callback(epoch + 1, val_loss, metrics)
             
-            # Early stopping check (no need to track best_val_loss)
+            # Early stopping check with proper loss handling
             if self.early_stopping(self.model, val_loss):
-                if callback:
-                    callback(epoch + 1, val_loss, metrics)
                 print(f"\nEarly stopping triggered at epoch {epoch + 1}")
                 break
     
-    def evaluate(self, X_val: torch.Tensor, y_val: torch.Tensor) -> Tuple[float, dict]:
-        """Evaluate the model."""
+    def evaluate(self, X_val: torch.Tensor, y_val: torch.Tensor) -> Tuple[Union[float, Dict[str, float]], Dict[str, float]]:
+        """Evaluate the model with consistent output format.
+        
+        Args:
+            X_val: Validation features
+            y_val: Validation labels
+            
+        Returns:
+            Tuple of (loss value or loss dictionary, metrics dictionary)
+        """
         self.model.eval()
         with torch.no_grad():
             # Get predictions
             model_output = self.model(X_val)
             
-            # Handle both tuple output (new model) and tensor output (old model)
             if isinstance(model_output, tuple):
                 val_outputs, additional_outputs = model_output
-                consistency_loss = additional_outputs['consistency_loss']
+                consistency_loss = additional_outputs.get('consistency_loss', 0.0)
             else:
                 val_outputs = model_output
                 consistency_loss = 0.0
+                additional_outputs = None
             
             # Calculate main loss
             main_loss = self.criterion(val_outputs, y_val)
-            total_loss = main_loss + 0.1 * consistency_loss
             
             # Calculate metrics
-            metrics = calculate_metrics(y_val, val_outputs)
+            metrics = calculate_metrics(y_val, val_outputs, additional_outputs)
             
-            # Add consistency loss to metrics if available
-            if consistency_loss != 0.0:
-                metrics['consistency_loss'] = consistency_loss.item()
-        
-        return total_loss.item(), metrics
+            # Prepare loss output
+            if consistency_loss:
+                loss_dict = {
+                    'main_loss': main_loss.item(),
+                    'consistency_loss': consistency_loss
+                }
+                return loss_dict, metrics
+            
+            return main_loss.item(), metrics
 
 
 def run_training(
-    config,
+    config: BSSNNConfig,
     model: BSSNN,
     X_train: torch.Tensor,
     X_val: torch.Tensor,
@@ -178,7 +185,11 @@ def run_training(
     """
     trainer = BSSNNTrainer(
         model=model,
-        lr=config.training.learning_rate
+        lr=config.training.learning_rate,
+        weight_decay=config.model.weight_decay,
+        early_stopping_patience=config.model.early_stopping_patience,
+        early_stopping_min_delta=config.model.early_stopping_min_delta,
+        consistency_weight=config.model.consistency_weight
     )
     
     # Create progress tracker with fold information

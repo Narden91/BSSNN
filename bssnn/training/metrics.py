@@ -1,53 +1,59 @@
 import torch
 import numpy as np
-from typing import Dict, Tuple, Optional
+from typing import Dict, Tuple, Optional, Union
 from sklearn.metrics import roc_auc_score, average_precision_score, precision_recall_curve
 from scipy.stats import entropy
 
 
+def ensure_numpy(tensor_or_array: Union[torch.Tensor, np.ndarray]) -> np.ndarray:
+    """Convert input to numpy array with proper type handling."""
+    if isinstance(tensor_or_array, torch.Tensor):
+        return tensor_or_array.detach().cpu().numpy()
+    return np.array(tensor_or_array)
+
+def ensure_numpy_scalar(tensor_or_array: Union[torch.Tensor, np.ndarray]) -> float:
+    """Convert input to a scalar float value with proper handling of multi-dimensional inputs."""
+    if isinstance(tensor_or_array, torch.Tensor):
+        tensor_or_array = tensor_or_array.detach().cpu().numpy()
+    
+    array = np.array(tensor_or_array)
+    if array.size > 1:
+        return float(np.mean(array))
+    return float(array.item())
+
 def calculate_metrics(
-    y_true: torch.Tensor,
-    y_pred: torch.Tensor,
-    threshold: float = 0.5
+    y_true: Union[torch.Tensor, np.ndarray],
+    y_pred: Union[torch.Tensor, np.ndarray],
+    additional_outputs: Optional[Dict] = None
 ) -> Dict[str, float]:
-    """Calculate comprehensive evaluation metrics for BSSNN predictions.
+    """Calculate comprehensive evaluation metrics with enhanced type handling."""
+    # Convert inputs to numpy arrays
+    y_true_np = ensure_numpy(y_true)
+    y_pred_np = ensure_numpy(y_pred)
     
-    Args:
-        y_true: Ground truth labels
-        y_pred: Predicted probabilities
-        threshold: Classification threshold for binary predictions
-        
-    Returns:
-        Dictionary containing various performance metrics
-    """
-    # Convert tensors to numpy for metric calculation
-    if isinstance(y_true, torch.Tensor):
-        y_true = y_true.detach().cpu().numpy()
-    if isinstance(y_pred, torch.Tensor):
-        y_pred = y_pred.detach().cpu().numpy()
+    # Ensure arrays are floating point type before comparison
+    y_pred_np = y_pred_np.astype(np.float64)
+    threshold = 0.5
+    y_pred_binary = np.where(y_pred_np >= threshold, 1, 0)
     
-    # Binary predictions using threshold
-    y_pred_binary = (y_pred >= threshold).astype(int)
-    
-    # Calculate basic classification metrics
+    # Calculate metrics
     metrics = {
-        'accuracy': calculate_accuracy(y_true, y_pred_binary),
-        'precision': calculate_precision(y_true, y_pred_binary),
-        'recall': calculate_recall(y_true, y_pred_binary),
-        'f1_score': calculate_f1_score(y_true, y_pred_binary),
-        'auc_roc': roc_auc_score(y_true, y_pred),
-        'average_precision': average_precision_score(y_true, y_pred)
+        'accuracy': calculate_accuracy(y_true_np, y_pred_binary),
+        'precision': calculate_precision(y_true_np, y_pred_binary),
+        'recall': calculate_recall(y_true_np, y_pred_binary),
+        'f1_score': calculate_f1_score(y_true_np, y_pred_binary),
+        'auc_roc': roc_auc_score(y_true_np, y_pred_np),
+        'average_precision': average_precision_score(y_true_np, y_pred_np)
     }
     
-    # Calculate Bayesian-specific metrics
-    metrics.update({
-        'calibration_error': calculate_calibration_error(y_true, y_pred),
-        'expected_calibration_error': calculate_expected_calibration_error(y_true, y_pred),
-        'predictive_entropy': calculate_predictive_entropy(y_pred)
-    })
-    
-    # Calculate optimal threshold using PR curve
-    metrics['optimal_threshold'] = find_optimal_threshold(y_true, y_pred)
+    # Handle additional outputs
+    if additional_outputs:
+        for key, value in additional_outputs.items():
+            try:
+                metrics[key] = ensure_numpy_scalar(value)
+            except Exception as e:
+                print(f"Warning: Could not convert {key} to scalar. Error: {str(e)}")
+                metrics[key] = 0.0
     
     return metrics
 

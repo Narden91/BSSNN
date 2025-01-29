@@ -1,3 +1,4 @@
+from typing import Dict, Union
 from torch import nn
 
 
@@ -19,11 +20,34 @@ class EarlyStopping:
         self.best_weights = None
         self.counter = 0
         self.early_stop = False
+        
+    def get_loss_value(self, loss: Union[float, Dict[str, float]]) -> float:
+        """Extract comparable loss value from different loss formats.
+        
+        Args:
+            loss: Loss value as float or dictionary
+            
+        Returns:
+            Float loss value for comparison
+        """
+        if isinstance(loss, dict):
+            return loss.get('main_loss', 0.0) + loss.get('consistency_loss', 0.0)
+        return float(loss)
     
-    def __call__(self, model: nn.Module, current_loss: float) -> bool:
-        """Check if training should stop."""
-        if current_loss < self.best_loss - self.min_delta:
-            self.best_loss = current_loss
+    def __call__(self, model: nn.Module, current_loss: Union[float, Dict[str, float]]) -> bool:
+        """Check if training should stop.
+        
+        Args:
+            model: Current model instance
+            current_loss: Current loss value or dictionary
+            
+        Returns:
+            Boolean indicating whether to stop training
+        """
+        loss_value = self.get_loss_value(current_loss)
+        
+        if loss_value < self.best_loss - self.min_delta:
+            self.best_loss = loss_value
             self.counter = 0
             if self.restore_best_weights:
                 self.best_weights = {

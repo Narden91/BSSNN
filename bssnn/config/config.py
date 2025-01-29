@@ -40,6 +40,8 @@ class ModelConfig:
     model_type: str = "bssnn"
     early_stopping_patience: int = 10
     early_stopping_min_delta: float = 1e-4
+    consistency_weight: float = 0.1  # Parameter for consistency loss weight
+    output_classes: int = 2  # Parameter for number of output classes
 
     def __post_init__(self):
         """Validate configuration parameters after initialization.
