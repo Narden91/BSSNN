@@ -1,19 +1,17 @@
 from sklearn.discriminant_analysis import StandardScaler
-from sklearn.model_selection import train_test_split
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from typing import Dict, Tuple, Optional, Union
+from typing import Callable, Dict, Tuple, Optional, Union
 from pathlib import Path
 from rich import print
 
 from bssnn.config.config import BSSNNConfig
-from bssnn.explainability.explainer import run_explanations
-from bssnn.training.early_stopping import EarlyStopping
-from bssnn.utils.data_loader import DataLoader
+from bssnn.training.loss_manager import EarlyStoppingMonitor
 from ..model.bssnn import BSSNN
-from .metrics import calculate_calibration_error, calculate_expected_calibration_error, calculate_metrics, calculate_predictive_entropy, find_optimal_threshold, process_model_outputs
+from .metrics import process_model_outputs
 from ..visualization.visualization import TrainingProgress
+
 
 
 class BSSNNTrainer:
@@ -27,27 +25,51 @@ class BSSNNTrainer:
         weight_decay: float = 0.01,
         early_stopping_patience: int = 10,
         early_stopping_min_delta: float = 1e-4,
-        consistency_weight: float = 0.1,
-        kl_weight: float = 0.01,  # New: Separate KL scaling factor
-        prior_strength: float = 0.5  # New: Strength of uniform prior
+        early_stopping_metric: str = 'val_loss',
+        device: Optional[torch.device] = None,
+        **kwargs  # Add this to handle additional config parameters
     ):
-        super().__init__()
-        self.model = model
+        """Initialize the trainer with enhanced configuration.
         
-        # Replace BCELoss with BCEWithLogitsLoss for numerical stability
-        self.criterion = nn.BCEWithLogitsLoss()
+        Args:
+            model: BSSNN model instance
+            optimizer: Optional optimizer (defaults to Adam)
+            lr: Learning rate for default optimizer
+            weight_decay: L2 regularization factor
+            early_stopping_patience: Number of epochs to wait before stopping
+            early_stopping_min_delta: Minimum improvement for early stopping
+            early_stopping_metric: Metric to monitor for early stopping
+            device: Optional device for model and data
+            **kwargs: Additional configuration parameters (ignored but allowed for compatibility)
+        """
+        self.model = model
+        self.device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.model.to(self.device)
+        
+        # Initialize optimizer
         self.optimizer = optimizer or optim.Adam(
             model.parameters(),
             lr=lr,
             weight_decay=weight_decay
         )
-        self.early_stopping = EarlyStopping(
+        
+        # Initialize criterion
+        self.criterion = nn.BCEWithLogitsLoss()
+        
+        # Initialize early stopping with enhanced monitor
+        self.early_stopping = EarlyStoppingMonitor(
             patience=early_stopping_patience,
-            min_delta=early_stopping_min_delta
+            min_delta=early_stopping_min_delta,
+            mode='min',
+            metric_name=early_stopping_metric
         )
-        self.kl_weight = kl_weight
-        self.prior_strength = prior_strength  # Prior = uniform distribution
-        self.consistency_weight = consistency_weight
+        
+        # Initialize training history
+        self.history = {
+            'train_loss': [],
+            'val_loss': [],
+            'metrics': []
+        }
     
     def calculate_total_loss(
         self, 
@@ -92,6 +114,25 @@ class BSSNNTrainer:
             
         return total_loss, loss_dict
     
+    def _prepare_batch(
+        self,
+        X: torch.Tensor,
+        y: Optional[torch.Tensor] = None
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        """Prepare a batch for training or evaluation.
+        
+        Args:
+            X: Input tensor
+            y: Optional target tensor
+            
+        Returns:
+            Tuple of (device-moved input tensor, optional device-moved target tensor)
+        """
+        X = X.to(self.device)
+        if y is not None:
+            y = y.to(self.device)
+        return X, y
+    
     def _calculate_kl_divergence(
         self, 
         probs: torch.Tensor  # Now takes probabilities directly
@@ -113,43 +154,55 @@ class BSSNNTrainer:
         X_train: torch.Tensor,
         y_train: torch.Tensor
     ) -> Dict[str, float]:
-        """Train for one epoch with improved log-space handling.
+        """Train for one epoch with improved error handling and monitoring.
         
         Args:
             X_train: Training features
-            y_train: Training labels
+            y_train: Training targets
             
         Returns:
-            Dictionary containing loss values
+            Dictionary containing training metrics
+            
+        Raises:
+            RuntimeError: If training fails due to model or optimizer issues
         """
+        self.model.train()
+        epoch_metrics = {}
+        
         try:
-            self.model.train()
+            # Prepare batch
+            X_train, y_train = self._prepare_batch(X_train, y_train)
+            
+            # Clear gradients
             self.optimizer.zero_grad()
             
-            # Get model outputs in log-space
-            log_outputs, additional_outputs = self.model(X_train)
+            # Forward pass
+            outputs, additional_outputs = self.model(X_train)
+            outputs = outputs.view(-1)
             
-            # Calculate loss using log-space computations
-            total_loss, loss_dict = self.calculate_total_loss(
-                log_outputs,
-                y_train,
-                additional_outputs
-            )
+            # Calculate loss
+            loss = self.criterion(outputs, y_train)
             
-            # Backpropagation
-            total_loss.backward()
-            
-            # Gradient clipping for stability
+            # Backward pass with gradient clipping
+            loss.backward()
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
             
+            # Optimizer step
             self.optimizer.step()
             
-            return loss_dict
+            # Calculate training metrics
+            with torch.no_grad():
+                epoch_metrics = process_model_outputs(
+                    outputs.detach(),
+                    y_train,
+                    additional_outputs
+                )
+                epoch_metrics['train_loss'] = loss.item()
             
-        except Exception as e:
-            print(f"\n[Debug] Error in train_epoch:")
-            print(f"Error type: {type(e).__name__}")
-            print(f"Error message: {str(e)}")
+            return epoch_metrics
+            
+        except RuntimeError as e:
+            print(f"\nError during training epoch: {str(e)}")
             raise
     
     def train(
@@ -159,91 +212,99 @@ class BSSNNTrainer:
         X_val: torch.Tensor,
         y_val: torch.Tensor,
         epochs: int,
-        callback = None
-    ):
-        """Train the model with early stopping and progress updates."""
-        for epoch in range(epochs):
-            # Training step
-            train_loss = self.train_epoch(X_train, y_train)
-            
-            # Validation step
-            val_loss, metrics = self.evaluate(X_val, y_val)
-            
-            # Call progress callback
-            if callback:
-                callback(epoch + 1, val_loss, metrics)
-            
-            # Early stopping check with proper loss handling
-            if self.early_stopping(self.model, val_loss):
-                print(f"\nEarly stopping triggered at epoch {epoch + 1}")
-                break
+        callback: Optional[Callable] = None):
+        """Train the model with comprehensive monitoring and callbacks.
+        
+        Args:
+            X_train: Training features
+            y_train: Training targets
+            X_val: Validation features
+            y_val: Validation targets
+            epochs: Number of epochs to train
+            callback: Optional callback for progress updates
+        """
+        best_val_loss = float('inf')
+        
+        try:
+            for epoch in range(epochs):
+                # Training step
+                train_metrics = self.train_epoch(X_train, y_train)
+                
+                # Validation step
+                val_loss, val_metrics = self.evaluate(X_val, y_val)
+                
+                # Update history
+                self.history['train_loss'].append(train_metrics['train_loss'])
+                self.history['val_loss'].append(val_loss)
+                self.history['metrics'].append(val_metrics)
+                
+                # Update progress if callback provided
+                if callback:
+                    callback(epoch + 1, val_loss, val_metrics)
+                
+                # Early stopping check
+                if self.early_stopping(self.model, val_metrics, epoch):
+                    break
+                
+                # Track best model
+                if val_loss < best_val_loss:
+                    best_val_loss = val_loss
+                
+        except KeyboardInterrupt:
+            print("\nTraining interrupted by user")
+        except Exception as e:
+            print(f"\nError during training: {str(e)}")
+            raise
+        
+        print(f"\nTraining completed:")
+        print(f"Best validation loss: {best_val_loss:.6f}")
+        print(f"Final epoch: {epoch + 1}")
     
-    def evaluate(self, X_val: torch.Tensor, y_val: torch.Tensor) -> Tuple[float, Dict[str, float]]:
-        """Evaluate the model with enhanced error handling and type checking.
+    def evaluate(
+        self,
+        X_val: torch.Tensor,
+        y_val: torch.Tensor
+    ) -> Tuple[float, Dict[str, float]]:
+        """Evaluate the model with comprehensive metrics.
         
         Args:
             X_val: Validation features
-            y_val: Validation labels
+            y_val: Validation targets
             
         Returns:
-            Tuple of (loss value, metrics dictionary)
+            Tuple of (validation loss, metrics dictionary)
         """
         self.model.eval()
-        with torch.no_grad():
-            try:
-                # Get predictions and additional outputs
+        
+        try:
+            with torch.no_grad():
+                # Prepare batch
+                X_val, y_val = self._prepare_batch(X_val, y_val)
+                
+                # Forward pass
                 outputs, additional_outputs = self.model(X_val)
-                outputs = outputs.view(-1)  # Ensure correct shape
+                outputs = outputs.view(-1)
                 
-                # Calculate main loss
-                main_loss = self.criterion(outputs, y_val)
+                # Calculate loss
+                val_loss = self.criterion(outputs, y_val)
                 
-                # Process all metrics
-                metrics = process_model_outputs(outputs, y_val, additional_outputs)
+                # Calculate metrics
+                metrics = process_model_outputs(
+                    outputs,
+                    y_val,
+                    additional_outputs
+                )
+                metrics['val_loss'] = val_loss.item()
                 
-                # Add calibration metrics
-                metrics.update({
-                    'calibration_error': calculate_calibration_error(
-                        y_val.cpu().numpy(),
-                        outputs.cpu().numpy()
-                    ),
-                    'expected_calibration_error': calculate_expected_calibration_error(
-                        y_val.cpu().numpy(),
-                        outputs.cpu().numpy()
-                    ),
-                    'predictive_entropy': calculate_predictive_entropy(
-                        outputs.cpu().numpy()
-                    ),
-                    'optimal_threshold': find_optimal_threshold(
-                        y_val.cpu().numpy(),
-                        outputs.cpu().numpy()
-                    )
-                })
+                return val_loss.item(), metrics
                 
-                # Add loss components
-                loss_value = float(main_loss.item())
-                metrics['main_loss'] = loss_value
-                
-                if additional_outputs and 'consistency_loss' in additional_outputs:
-                    consistency_loss = float(additional_outputs['consistency_loss'])
-                    # Scale down consistency loss to prevent it from dominating
-                    consistency_loss = consistency_loss * self.consistency_weight
-                    metrics.update({
-                        'consistency_loss': consistency_loss,
-                        'total_loss': loss_value + consistency_loss
-                    })
-                else:
-                    metrics['total_loss'] = loss_value
-                
-                return metrics['total_loss'], metrics
-                    
-            except Exception as e:
-                print(f"Error in evaluate: {str(e)}")
-                return float('inf'), {'error': str(e)}
+        except Exception as e:
+            print(f"\nError during evaluation: {str(e)}")
+            return float('inf'), {'error': str(e)}
 
 
 def run_training(
-    config: BSSNNConfig,
+    config: 'BSSNNConfig',
     model: BSSNN,
     X_train: torch.Tensor,
     X_val: torch.Tensor,
@@ -255,13 +316,17 @@ def run_training(
 ) -> BSSNNTrainer:
     """Execute the training process with progress tracking.
     
+    This function creates and configures a trainer instance based on the provided
+    configuration. It handles the training process and provides appropriate progress
+    tracking and early stopping functionality.
+    
     Args:
         config: Training configuration
         model: Initialized BSSNN model
         X_train: Training features
         X_val: Validation features
-        y_train: Training labels
-        y_val: Validation labels
+        y_train: Training targets
+        y_val: Validation targets
         fold: Optional fold number for cross-validation
         is_final: Whether this is the final model training
         silent: Whether to suppress progress output
@@ -269,13 +334,14 @@ def run_training(
     Returns:
         Trained model trainer instance
     """
+    # Create trainer with configuration parameters
     trainer = BSSNNTrainer(
         model=model,
         lr=config.training.learning_rate,
         weight_decay=config.model.weight_decay,
         early_stopping_patience=config.model.early_stopping_patience,
         early_stopping_min_delta=config.model.early_stopping_min_delta,
-        consistency_weight=config.model.consistency_weight
+        early_stopping_metric='val_loss'  # We now specify the metric to monitor
     )
     
     # Create progress tracker with fold information
@@ -300,8 +366,8 @@ def run_training(
     )
     
     # Complete progress
-    _, final_metrics = trainer.evaluate(X_val, y_val)
-    progress.complete(trainer.early_stopping.best_loss, final_metrics)
+    val_loss, final_metrics = trainer.evaluate(X_val, y_val)
+    progress.complete(trainer.early_stopping.best_score, final_metrics)
     
     return trainer
 
