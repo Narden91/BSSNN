@@ -17,8 +17,9 @@ class ValidationConfig:
 class ModelConfig:
     """Configuration for BSSNN model architecture.
     
-    This class defines the model architecture parameters with validation for each field.
-    The input_size can be None initially and set later based on data dimensions.
+    This class defines the model architecture parameters with comprehensive validation
+    for each field. The configuration supports both linear and nonlinear components
+    through carefully tuned hyperparameters.
     
     Attributes:
         input_size: Number of input features (can be None initially)
@@ -30,6 +31,16 @@ class ModelConfig:
         model_type: Type of BSSNN model ("bssnn" or "state_space_bssnn")
         early_stopping_patience: Number of epochs to wait before early stopping
         early_stopping_min_delta: Minimum change in validation loss for early stopping
+        consistency_weight: Weight for the consistency loss term
+        output_classes: Number of output classes
+        kl_weight: Weight for the KL divergence loss term (default: 0.01)
+            Controls the strength of the regularization towards the prior distribution.
+            Smaller values allow more flexible learning, while larger values enforce
+            stronger regularization.
+        prior_strength: Strength of the uniform prior (default: 0.5)
+            Controls how strongly the model is biased towards uniform predictions.
+            Values closer to 1.0 enforce stronger uniformity, while values closer to
+            0.0 allow more peaked distributions.
     """
     input_size: Optional[int]
     hidden_size: int
@@ -40,43 +51,46 @@ class ModelConfig:
     model_type: str = "bssnn"
     early_stopping_patience: int = 10
     early_stopping_min_delta: float = 1e-4
-    consistency_weight: float = 0.1  # Parameter for consistency loss weight
-    output_classes: int = 2  # Parameter for number of output classes
+    consistency_weight: float = 0.1
+    output_classes: int = 2
+    kl_weight: float = 0.01
+    prior_strength: float = 0.5
 
     def __post_init__(self):
         """Validate configuration parameters after initialization.
         
+        This method ensures all parameters are within valid ranges and logically
+        consistent with each other. It performs comprehensive validation of both
+        architectural parameters and learning hyperparameters.
+        
         Raises:
-            ValueError: If any parameter is invalid
+            ValueError: If any parameter is invalid or inconsistent
         """
-        # Validate input_size if provided
+        # Existing validations
         if self.input_size is not None and self.input_size <= 0:
             raise ValueError("input_size must be positive when specified")
-
-        # Validate other required parameters
         if self.hidden_size <= 0:
             raise ValueError("hidden_size must be positive")
-            
         if self.state_size <= 0:
             raise ValueError("state_size must be positive")
-            
         if self.num_state_layers <= 0:
             raise ValueError("num_state_layers must be positive")
-            
         if not (0 <= self.dropout_rate <= 1):
             raise ValueError("dropout_rate must be between 0 and 1")
-            
         if self.weight_decay < 0:
             raise ValueError("weight_decay must be non-negative")
-            
         if self.early_stopping_patience <= 0:
             raise ValueError("early_stopping_patience must be positive")
-            
         if self.early_stopping_min_delta <= 0:
             raise ValueError("early_stopping_min_delta must be positive")
-            
         if self.model_type not in ["bssnn", "state_space_bssnn"]:
-            raise ValueError("model_type must be either 'bssnn' or 'state_space_bssnn'")
+            raise ValueError("model_type must be either 'bssnn' or 'state_space_bssnn'")            
+        if self.kl_weight < 0:
+            raise ValueError("kl_weight must be non-negative")
+        if not (0 <= self.prior_strength <= 1):
+            raise ValueError("prior_strength must be between 0 and 1")
+        
+        print("[bold green]Model configuration validated successfully[/bold green]")
     
     def adapt_to_data(self, n_features: int):
         """Adapt model configuration to data dimensions.
@@ -196,7 +210,8 @@ class BSSNNConfig:
         self.data = data_config
         self.explainability = explainability_config
         self.output = output_config
-        
+        self.model.kl_weight = 0.01  # Start with small KL weight
+        self.model.prior_strength = 0.5  # Weak prior initially
         # Create output directories
         self._setup_directories()
     

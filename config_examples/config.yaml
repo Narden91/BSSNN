@@ -1,6 +1,6 @@
 model:
   input_size: null
-  hidden_size: 16
+  hidden_size: 8
   state_size: 32          
   num_state_layers: 2     
   dropout_rate: 0.3
@@ -8,6 +8,10 @@ model:
   model_type: "bssnn"  # Use "bssnn" for original model, "state_space_bssnn"
   early_stopping_patience: 20
   early_stopping_min_delta: 0.001
+  consistency_weight: 0.1
+  output_classes: 2
+  kl_weight: 0.01    # Controls KL divergence regularization strength
+  prior_strength: 0.3 # Controls bias towards uniform distribution
 
 training:
   num_epochs: 100

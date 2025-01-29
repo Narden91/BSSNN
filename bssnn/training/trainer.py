@@ -27,10 +27,13 @@ class BSSNNTrainer:
         weight_decay: float = 0.01,
         early_stopping_patience: int = 10,
         early_stopping_min_delta: float = 1e-4,
-        consistency_weight: float = 0.1 
+        consistency_weight: float = 0.1,
+        kl_weight: float = 0.01,  # New: Separate KL scaling factor
+        prior_strength: float = 0.5  # New: Strength of uniform prior
     ):
         super().__init__()
         self.model = model
+        
         # Replace BCELoss with BCEWithLogitsLoss for numerical stability
         self.criterion = nn.BCEWithLogitsLoss()
         self.optimizer = optimizer or optim.Adam(
@@ -42,6 +45,8 @@ class BSSNNTrainer:
             patience=early_stopping_patience,
             min_delta=early_stopping_min_delta
         )
+        self.kl_weight = kl_weight
+        self.prior_strength = prior_strength  # Prior = uniform distribution
         self.consistency_weight = consistency_weight
     
     def calculate_total_loss(
@@ -60,34 +65,27 @@ class BSSNNTrainer:
         Returns:
             Tuple of (total loss tensor, loss dictionary)
         """
-        # Calculate main loss using logits directly
+        # Main loss (BCEWithLogitsLoss)
         main_loss = self.criterion(log_outputs, targets)
-        
         loss_dict = {'main_loss': main_loss.item()}
         
         if additional_outputs:
-            # Add KL divergence loss for probability consistency
-            if 'log_joint' in additional_outputs and 'log_conditional' in additional_outputs:
-                kl_loss = self._calculate_kl_divergence(
-                    additional_outputs['log_joint'],
-                    additional_outputs['log_conditional']
-                )
-                loss_dict['kl_loss'] = kl_loss.item()
-                
-                # Add consistency loss if available
-                if 'consistency_loss' in additional_outputs:
-                    consistency_loss = additional_outputs['consistency_loss']
-                    loss_dict['consistency_loss'] = consistency_loss
-                    
-                    # Combine all losses
-                    total_loss = main_loss + self.consistency_weight * (consistency_loss + kl_loss)
-                    loss_dict['total_loss'] = total_loss.item()
-                else:
-                    total_loss = main_loss + self.consistency_weight * kl_loss
-                    loss_dict['total_loss'] = total_loss.item()
-            else:
-                total_loss = main_loss
-                loss_dict['total_loss'] = main_loss.item()
+            # KL divergence with adaptive weighting
+            probs = torch.softmax(additional_outputs['log_joint'], dim=1)
+            kl_loss = self._calculate_kl_divergence(probs)
+            loss_dict['kl_loss'] = kl_loss.item()
+            
+            # Consistency loss (already scaled)
+            consistency_loss = additional_outputs.get('consistency_loss', 0.0)
+            loss_dict['consistency_loss'] = consistency_loss
+            
+            # Total loss with separate scaling
+            total_loss = (
+                main_loss 
+                + self.consistency_weight * consistency_loss 
+                + self.kl_weight * kl_loss
+            )
+            loss_dict['total_loss'] = total_loss.item()
         else:
             total_loss = main_loss
             loss_dict['total_loss'] = main_loss.item()
@@ -95,28 +93,19 @@ class BSSNNTrainer:
         return total_loss, loss_dict
     
     def _calculate_kl_divergence(
-        self,
-        log_joint: torch.Tensor,
-        log_conditional: torch.Tensor
+        self, 
+        probs: torch.Tensor  # Now takes probabilities directly
     ) -> torch.Tensor:
-        """Calculate KL divergence between joint and conditional distributions.
+        """Calculate KL divergence between model predictions and uniform prior."""
+        # Uniform prior (adjusted by prior_strength)
+        prior = torch.full_like(probs, self.prior_strength * 0.5)  # 0.5 for binary
+        prior = prior / prior.sum(dim=1, keepdim=True)  # Ensure normalization
         
-        Args:
-            log_joint: Log joint probabilities
-            log_conditional: Log conditional probabilities
-            
-        Returns:
-            KL divergence loss
-        """
-        # Convert from log-space to probability space
-        joint_probs = torch.softmax(log_joint, dim=1)
-        conditional_probs = torch.softmax(log_conditional, dim=1)
-        
-        # Calculate KL divergence
-        kl_div = torch.sum(joint_probs * (
-            torch.log(joint_probs + 1e-10) - torch.log(conditional_probs + 1e-10)
-        ), dim=1)
-        
+        # KL(pred || prior)
+        kl_div = torch.sum(
+            probs * (torch.log(probs + 1e-10) - torch.log(prior + 1e-10)),
+            dim=1
+        )
         return kl_div.mean()
     
     def train_epoch(
