@@ -1,11 +1,11 @@
 model:
   input_size: 10
   hidden_size: 64
-  state_size: 32          # New parameter
-  num_state_layers: 2     # New parameter
+  state_size: 32          
+  num_state_layers: 2     
   dropout_rate: 0.2
   weight_decay: 0.01
-  model_type: "state_space_bssnn"  # Use "bssnn" for original model, "state_space_bssnn"
+  model_type: "bssnn"  # Use "bssnn" for original model, "state_space_bssnn"
   early_stopping_patience: 10
   early_stopping_min_delta: 0.0001
 
@@ -18,19 +18,19 @@ training:
     - f1_score
     - auc_roc
     - calibration_error
-
+# "C:\\Users\\Emanuele\\Documents\\Progetti Python\\BSSNN\\data\\raw\\T01.csv"
 data:
-  input_path: "C:\\Users\\Emanuele\\Documents\\Progetti Python\\BSSNN\\data\\raw\\T01.csv"
+  input_path: 
   feature_columns:
     - feature1
     - feature2
     - feature3
   target_column: Label
   validation:
-    test_size: 0.2  # Final test set size
-    val_size: 0.2   # Validation set size for each fold
-    n_folds: 5      # Number of cross-validation folds
-    stratify: true  # Whether to use stratified splits
+    test_size: 0.2   # Final test set size
+    val_size: 0.2    # Validation set size for each fold
+    n_folds: 5       # Number of cross-validation folds
+    stratify: true   # Whether to use stratified splits
   random_state: 42
   
   # Synthetic data parameters (used if input_path is null)

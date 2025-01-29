@@ -40,7 +40,7 @@ class BSSNNTrainer:
         )
         
     def train_epoch(self, X_train: torch.Tensor, y_train: torch.Tensor) -> float:
-        """Train for one epoch.
+        """Train for one epoch with enhanced validation and debugging.
         
         Args:
             X_train: Training features
@@ -51,23 +51,45 @@ class BSSNNTrainer:
         """
         try:
             self.model.train()
-            self.optimizer.zero_grad()  # Reset gradients
+            self.optimizer.zero_grad()
             
-            outputs = self.model(X_train).squeeze()
-            loss = self.criterion(outputs, y_train)
-            loss_value = loss.item()
+            # Validate input data
+            assert torch.all((y_train >= 0) & (y_train <= 1)), "Labels must be between 0 and 1"
+            
+            # Forward pass
+            model_output = self.model(X_train)
+            
+            # Handle both tuple output (new model) and tensor output (old model)
+            if isinstance(model_output, tuple):
+                outputs, additional_outputs = model_output
+                consistency_loss = additional_outputs['consistency_loss']
+            else:
+                outputs = model_output
+                consistency_loss = 0.0
+            
+            # Ensure outputs are properly bounded
+            if not torch.all((outputs >= 0) & (outputs <= 1)):
+                raise ValueError("Model outputs must be between 0 and 1")
+            
+            # Calculate loss with consistency regularization
+            main_loss = self.criterion(outputs, y_train)
+            total_loss = main_loss + 0.1 * consistency_loss  # Weight for consistency loss
+            loss_value = total_loss.item()
             
             # Backpropagation
-            loss.backward()
-            self.optimizer.step()  # Update weights
+            total_loss.backward()
+            self.optimizer.step()
             
-            # Clear unnecessary tensors
-            del outputs
+            # Clear memory
+            del outputs, model_output
             torch.cuda.empty_cache()
             
             return loss_value
-        except RuntimeError as e:
-            print(f"Error during training: {str(e)}")
+            
+        except Exception as e:
+            print(f"\n[Debug] Error in train_epoch:")
+            print(f"Error type: {type(e).__name__}")
+            print(f"Error message: {str(e)}")
             raise
     
     def train(
@@ -98,22 +120,33 @@ class BSSNNTrainer:
                 print(f"\nEarly stopping triggered at epoch {epoch + 1}")
                 break
     
-    def evaluate(
-        self,
-        X_val: torch.Tensor,
-        y_val: torch.Tensor
-    ) -> Tuple[float, dict]:
+    def evaluate(self, X_val: torch.Tensor, y_val: torch.Tensor) -> Tuple[float, dict]:
         """Evaluate the model."""
         self.model.eval()
         with torch.no_grad():
             # Get predictions
-            val_outputs = self.model(X_val).squeeze()
-            val_loss = self.criterion(val_outputs, y_val)
+            model_output = self.model(X_val)
+            
+            # Handle both tuple output (new model) and tensor output (old model)
+            if isinstance(model_output, tuple):
+                val_outputs, additional_outputs = model_output
+                consistency_loss = additional_outputs['consistency_loss']
+            else:
+                val_outputs = model_output
+                consistency_loss = 0.0
+            
+            # Calculate main loss
+            main_loss = self.criterion(val_outputs, y_val)
+            total_loss = main_loss + 0.1 * consistency_loss
             
             # Calculate metrics
             metrics = calculate_metrics(y_val, val_outputs)
+            
+            # Add consistency loss to metrics if available
+            if consistency_loss != 0.0:
+                metrics['consistency_loss'] = consistency_loss.item()
         
-        return val_loss.item(), metrics
+        return total_loss.item(), metrics
 
 
 def run_training(
