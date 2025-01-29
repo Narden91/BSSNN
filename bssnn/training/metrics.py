@@ -5,57 +5,168 @@ from sklearn.metrics import roc_auc_score, average_precision_score, precision_re
 from scipy.stats import entropy
 
 
-def ensure_numpy(tensor_or_array: Union[torch.Tensor, np.ndarray]) -> np.ndarray:
-    """Convert input to numpy array with proper type handling."""
-    if isinstance(tensor_or_array, torch.Tensor):
-        return tensor_or_array.detach().cpu().numpy()
-    return np.array(tensor_or_array)
+# def ensure_numpy(tensor_or_array: Union[torch.Tensor, np.ndarray]) -> np.ndarray:
+#     """Convert input to numpy array with proper type handling."""
+#     if isinstance(tensor_or_array, torch.Tensor):
+#         return tensor_or_array.detach().cpu().numpy()
+#     return np.array(tensor_or_array)
 
-def ensure_numpy_scalar(tensor_or_array: Union[torch.Tensor, np.ndarray]) -> float:
-    """Convert input to a scalar float value with proper handling of multi-dimensional inputs."""
-    if isinstance(tensor_or_array, torch.Tensor):
-        tensor_or_array = tensor_or_array.detach().cpu().numpy()
+# def ensure_numpy_scalar(tensor_or_array: Union[torch.Tensor, np.ndarray]) -> float:
+#     """Convert input to a scalar float value with proper handling of multi-dimensional inputs."""
+#     if isinstance(tensor_or_array, torch.Tensor):
+#         tensor_or_array = tensor_or_array.detach().cpu().numpy()
     
-    array = np.array(tensor_or_array)
-    if array.size > 1:
-        return float(np.mean(array))
-    return float(array.item())
+#     array = np.array(tensor_or_array)
+#     if array.size > 1:
+#         return float(np.mean(array))
+#     return float(array.item())
 
-def calculate_metrics(
-    y_true: Union[torch.Tensor, np.ndarray],
-    y_pred: Union[torch.Tensor, np.ndarray],
+
+# In metrics.py
+
+def calculate_predictive_entropy(y_pred: torch.Tensor) -> float:
+    """Calculate predictive entropy for binary classification probabilities.
+    
+    This function is specifically designed to handle binary classification outputs
+    where we have a tensor of shape [batch_size, 2] containing class probabilities.
+    It computes the entropy in a numerically stable way while staying in PyTorch
+    for as long as possible to avoid problematic tensor-numpy conversions.
+    
+    Args:
+        y_pred: Probability tensor from softmax output, shape [batch_size, 2]
+               Contains probabilities for both classes that sum to 1
+        
+    Returns:
+        float: Average entropy across the batch
+    """
+    try:
+        # Stay in PyTorch as long as possible
+        eps = torch.finfo(y_pred.dtype).eps
+        
+        # Get probabilities for both classes
+        p0 = y_pred[:, 0].clamp(eps, 1 - eps)
+        p1 = y_pred[:, 1].clamp(eps, 1 - eps)
+        
+        # Calculate entropy using PyTorch operations
+        entropy = -(p0 * torch.log(p0) + p1 * torch.log(p1))
+        
+        # Return mean entropy as a Python float
+        return float(entropy.mean().item())
+        
+    except Exception as e:
+        print(f"\nError in entropy calculation:")
+        print(f"- Error type: {type(e).__name__}")
+        print(f"- Message: {str(e)}")
+        print(f"- Input tensor shape: {y_pred.shape}")
+        print(f"- Input tensor dtype: {y_pred.dtype}")
+        return 0.0
+
+def process_model_outputs(
+    outputs: torch.Tensor,
+    labels: torch.Tensor,
     additional_outputs: Optional[Dict] = None
 ) -> Dict[str, float]:
-    """Calculate comprehensive evaluation metrics with enhanced type handling."""
-    # Convert inputs to numpy arrays
-    y_true_np = ensure_numpy(y_true)
-    y_pred_np = ensure_numpy(y_pred)
-    
-    # Ensure arrays are floating point type before comparison
-    y_pred_np = y_pred_np.astype(np.float64)
-    threshold = 0.5
-    y_pred_binary = np.where(y_pred_np >= threshold, 1, 0)
-    
-    # Calculate metrics
-    metrics = {
-        'accuracy': calculate_accuracy(y_true_np, y_pred_binary),
-        'precision': calculate_precision(y_true_np, y_pred_binary),
-        'recall': calculate_recall(y_true_np, y_pred_binary),
-        'f1_score': calculate_f1_score(y_true_np, y_pred_binary),
-        'auc_roc': roc_auc_score(y_true_np, y_pred_np),
-        'average_precision': average_precision_score(y_true_np, y_pred_np)
-    }
-    
-    # Handle additional outputs
-    if additional_outputs:
-        for key, value in additional_outputs.items():
-            try:
-                metrics[key] = ensure_numpy_scalar(value)
-            except Exception as e:
-                print(f"Warning: Could not convert {key} to scalar. Error: {str(e)}")
-                metrics[key] = 0.0
-    
-    return metrics
+    """Process model outputs with robust type handling and error recovery."""
+    try:
+        # Ensure outputs and labels are proper tensors and on CPU
+        outputs = outputs.detach().cpu()
+        labels = labels.detach().cpu()
+        
+        # Convert to numpy arrays for metric calculation
+        outputs_np = outputs.numpy()
+        labels_np = labels.numpy()
+        
+        # Calculate base metrics with error handling
+        try:
+            metrics = calculate_metrics(labels_np, outputs_np)
+        except Exception as e:
+            print(f"Warning: Error in base metrics calculation: {str(e)}")
+            # Provide fallback metrics
+            metrics = {
+                'accuracy': 0.0,
+                'f1_score': 0.0,
+                'auc_roc': 0.0,
+                'average_precision': 0.0
+            }
+
+        # Process additional outputs if available
+        if additional_outputs:
+            for key in ['consistency_loss', 'uncertainty', 'sum_constraint', 'non_negativity']:
+                if key in additional_outputs:
+                    value = additional_outputs[key]
+                    metrics[key] = float(value) if isinstance(value, (torch.Tensor, np.ndarray)) else float(value)
+
+        return metrics
+    except Exception as e:
+        print(f"Warning: Error in process_model_outputs: {str(e)}")
+        # Return default metrics to prevent pipeline failure
+        return {
+            'accuracy': 0.0,
+            'f1_score': 0.0,
+            'auc_roc': 0.0,
+            'average_precision': 0.0
+        }
+
+
+def calculate_metrics(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    threshold: float = 0.5
+) -> Dict[str, float]:
+    """Calculate metrics with robust type handling and error recovery."""
+    try:
+        # Ensure arrays are the right type
+        y_true = np.asarray(y_true, dtype=np.float32)
+        y_pred = np.asarray(y_pred, dtype=np.float32)
+        
+        # Create binary predictions
+        y_pred_binary = (y_pred >= threshold).astype(np.float32)
+        
+        # Calculate metrics with error handling
+        metrics = {}
+        
+        try:
+            metrics['accuracy'] = float(calculate_accuracy(y_true, y_pred_binary))
+        except:
+            metrics['accuracy'] = 0.0
+            
+        try:
+            metrics['precision'] = float(calculate_precision(y_true, y_pred_binary))
+        except:
+            metrics['precision'] = 0.0
+            
+        try:
+            metrics['recall'] = float(calculate_recall(y_true, y_pred_binary))
+        except:
+            metrics['recall'] = 0.0
+            
+        try:
+            metrics['f1_score'] = float(calculate_f1_score(y_true, y_pred_binary))
+        except:
+            metrics['f1_score'] = 0.0
+            
+        try:
+            metrics['auc_roc'] = float(roc_auc_score(y_true, y_pred))
+        except:
+            metrics['auc_roc'] = 0.0
+            
+        try:
+            metrics['average_precision'] = float(average_precision_score(y_true, y_pred))
+        except:
+            metrics['average_precision'] = 0.0
+        
+        return metrics
+        
+    except Exception as e:
+        print(f"Error in calculate_metrics: {str(e)}")
+        return {
+            'accuracy': 0.0,
+            'precision': 0.0,
+            'recall': 0.0,
+            'f1_score': 0.0,
+            'auc_roc': 0.0,
+            'average_precision': 0.0
+        }
 
 
 def calculate_accuracy(y_true: np.ndarray, y_pred: np.ndarray) -> float:

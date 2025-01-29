@@ -1,3 +1,5 @@
+from sklearn.discriminant_analysis import StandardScaler
+from sklearn.model_selection import train_test_split
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -10,7 +12,7 @@ from bssnn.explainability.explainer import run_explanations
 from bssnn.training.early_stopping import EarlyStopping
 from bssnn.utils.data_loader import DataLoader
 from ..model.bssnn import BSSNN
-from .metrics import calculate_metrics
+from .metrics import calculate_calibration_error, calculate_expected_calibration_error, calculate_metrics, calculate_predictive_entropy, find_optimal_threshold, process_model_outputs
 from ..visualization.visualization import TrainingProgress
 
 
@@ -20,7 +22,6 @@ class BSSNNTrainer:
     def __init__(
         self,
         model: BSSNN,
-        criterion: Optional[nn.Module] = None,
         optimizer: Optional[torch.optim.Optimizer] = None,
         lr: float = 0.001,
         weight_decay: float = 0.01,
@@ -28,8 +29,10 @@ class BSSNNTrainer:
         early_stopping_min_delta: float = 1e-4,
         consistency_weight: float = 0.1 
     ):
+        super().__init__()
         self.model = model
-        self.criterion = criterion or nn.BCELoss()
+        # Replace BCELoss with BCEWithLogitsLoss for numerical stability
+        self.criterion = nn.BCEWithLogitsLoss()
         self.optimizer = optimizer or optim.Adam(
             model.parameters(),
             lr=lr,
@@ -41,47 +44,117 @@ class BSSNNTrainer:
         )
         self.consistency_weight = consistency_weight
     
-    def calculate_total_loss(self, outputs, targets, additional_outputs=None):
-        """Calculate total loss including consistency if available."""
-        main_loss = self.criterion(outputs, targets)
+    def calculate_total_loss(
+        self, 
+        log_outputs: torch.Tensor,
+        targets: torch.Tensor,
+        additional_outputs: Optional[Dict[str, torch.Tensor]] = None
+    ) -> Tuple[torch.Tensor, Dict[str, float]]:
+        """Calculate loss using log-space computations for numerical stability.
         
-        if additional_outputs and 'consistency_loss' in additional_outputs:
-            consistency_loss = additional_outputs['consistency_loss']
-            return main_loss + self.consistency_weight * consistency_loss, {
-                'main_loss': main_loss.item(),
-                'consistency_loss': consistency_loss.item()
-            }
+        Args:
+            log_outputs: Model outputs in log-space (logits)
+            targets: Target values
+            additional_outputs: Additional model outputs including consistency metrics
+            
+        Returns:
+            Tuple of (total loss tensor, loss dictionary)
+        """
+        # Calculate main loss using logits directly
+        main_loss = self.criterion(log_outputs, targets)
         
-        return main_loss, {'main_loss': main_loss.item()}
+        loss_dict = {'main_loss': main_loss.item()}
+        
+        if additional_outputs:
+            # Add KL divergence loss for probability consistency
+            if 'log_joint' in additional_outputs and 'log_conditional' in additional_outputs:
+                kl_loss = self._calculate_kl_divergence(
+                    additional_outputs['log_joint'],
+                    additional_outputs['log_conditional']
+                )
+                loss_dict['kl_loss'] = kl_loss.item()
+                
+                # Add consistency loss if available
+                if 'consistency_loss' in additional_outputs:
+                    consistency_loss = additional_outputs['consistency_loss']
+                    loss_dict['consistency_loss'] = consistency_loss
+                    
+                    # Combine all losses
+                    total_loss = main_loss + self.consistency_weight * (consistency_loss + kl_loss)
+                    loss_dict['total_loss'] = total_loss.item()
+                else:
+                    total_loss = main_loss + self.consistency_weight * kl_loss
+                    loss_dict['total_loss'] = total_loss.item()
+            else:
+                total_loss = main_loss
+                loss_dict['total_loss'] = main_loss.item()
+        else:
+            total_loss = main_loss
+            loss_dict['total_loss'] = main_loss.item()
+            
+        return total_loss, loss_dict
     
-    def train_epoch(self, X_train: torch.Tensor, y_train: torch.Tensor) -> float:
-        """Train for one epoch with enhanced validation and debugging.
+    def _calculate_kl_divergence(
+        self,
+        log_joint: torch.Tensor,
+        log_conditional: torch.Tensor
+    ) -> torch.Tensor:
+        """Calculate KL divergence between joint and conditional distributions.
+        
+        Args:
+            log_joint: Log joint probabilities
+            log_conditional: Log conditional probabilities
+            
+        Returns:
+            KL divergence loss
+        """
+        # Convert from log-space to probability space
+        joint_probs = torch.softmax(log_joint, dim=1)
+        conditional_probs = torch.softmax(log_conditional, dim=1)
+        
+        # Calculate KL divergence
+        kl_div = torch.sum(joint_probs * (
+            torch.log(joint_probs + 1e-10) - torch.log(conditional_probs + 1e-10)
+        ), dim=1)
+        
+        return kl_div.mean()
+    
+    def train_epoch(
+        self,
+        X_train: torch.Tensor,
+        y_train: torch.Tensor
+    ) -> Dict[str, float]:
+        """Train for one epoch with improved log-space handling.
         
         Args:
             X_train: Training features
             y_train: Training labels
             
         Returns:
-            Training loss for this epoch
+            Dictionary containing loss values
         """
         try:
             self.model.train()
             self.optimizer.zero_grad()
-
-            # Forward pass
-            model_output = self.model(X_train)
-            outputs, additional_outputs = (model_output if isinstance(model_output, tuple)
-                                        else (model_output, None))
-
-            # Calculate total loss
+            
+            # Get model outputs in log-space
+            log_outputs, additional_outputs = self.model(X_train)
+            
+            # Calculate loss using log-space computations
             total_loss, loss_dict = self.calculate_total_loss(
-                outputs, y_train, additional_outputs
+                log_outputs,
+                y_train,
+                additional_outputs
             )
-
+            
             # Backpropagation
             total_loss.backward()
+            
+            # Gradient clipping for stability
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+            
             self.optimizer.step()
-
+            
             return loss_dict
             
         except Exception as e:
@@ -116,44 +189,68 @@ class BSSNNTrainer:
                 print(f"\nEarly stopping triggered at epoch {epoch + 1}")
                 break
     
-    def evaluate(self, X_val: torch.Tensor, y_val: torch.Tensor) -> Tuple[Union[float, Dict[str, float]], Dict[str, float]]:
-        """Evaluate the model with consistent output format.
+    def evaluate(self, X_val: torch.Tensor, y_val: torch.Tensor) -> Tuple[float, Dict[str, float]]:
+        """Evaluate the model with enhanced error handling and type checking.
         
         Args:
             X_val: Validation features
             y_val: Validation labels
             
         Returns:
-            Tuple of (loss value or loss dictionary, metrics dictionary)
+            Tuple of (loss value, metrics dictionary)
         """
         self.model.eval()
         with torch.no_grad():
-            # Get predictions
-            model_output = self.model(X_val)
-            
-            if isinstance(model_output, tuple):
-                val_outputs, additional_outputs = model_output
-                consistency_loss = additional_outputs.get('consistency_loss', 0.0)
-            else:
-                val_outputs = model_output
-                consistency_loss = 0.0
-                additional_outputs = None
-            
-            # Calculate main loss
-            main_loss = self.criterion(val_outputs, y_val)
-            
-            # Calculate metrics
-            metrics = calculate_metrics(y_val, val_outputs, additional_outputs)
-            
-            # Prepare loss output
-            if consistency_loss:
-                loss_dict = {
-                    'main_loss': main_loss.item(),
-                    'consistency_loss': consistency_loss
-                }
-                return loss_dict, metrics
-            
-            return main_loss.item(), metrics
+            try:
+                # Get predictions and additional outputs
+                outputs, additional_outputs = self.model(X_val)
+                outputs = outputs.view(-1)  # Ensure correct shape
+                
+                # Calculate main loss
+                main_loss = self.criterion(outputs, y_val)
+                
+                # Process all metrics
+                metrics = process_model_outputs(outputs, y_val, additional_outputs)
+                
+                # Add calibration metrics
+                metrics.update({
+                    'calibration_error': calculate_calibration_error(
+                        y_val.cpu().numpy(),
+                        outputs.cpu().numpy()
+                    ),
+                    'expected_calibration_error': calculate_expected_calibration_error(
+                        y_val.cpu().numpy(),
+                        outputs.cpu().numpy()
+                    ),
+                    'predictive_entropy': calculate_predictive_entropy(
+                        outputs.cpu().numpy()
+                    ),
+                    'optimal_threshold': find_optimal_threshold(
+                        y_val.cpu().numpy(),
+                        outputs.cpu().numpy()
+                    )
+                })
+                
+                # Add loss components
+                loss_value = float(main_loss.item())
+                metrics['main_loss'] = loss_value
+                
+                if additional_outputs and 'consistency_loss' in additional_outputs:
+                    consistency_loss = float(additional_outputs['consistency_loss'])
+                    # Scale down consistency loss to prevent it from dominating
+                    consistency_loss = consistency_loss * self.consistency_weight
+                    metrics.update({
+                        'consistency_loss': consistency_loss,
+                        'total_loss': loss_value + consistency_loss
+                    })
+                else:
+                    metrics['total_loss'] = loss_value
+                
+                return metrics['total_loss'], metrics
+                    
+            except Exception as e:
+                print(f"Error in evaluate: {str(e)}")
+                return float('inf'), {'error': str(e)}
 
 
 def run_training(
@@ -220,23 +317,40 @@ def run_training(
     return trainer
 
 
-def run_final_model_training(config: BSSNNConfig, X, y, output_dir: Path):
-    """Train final model on full dataset."""
-    data_loader = DataLoader()
-    X_train, X_val, X_test, y_train, y_val, y_test = data_loader.get_cross_validation_splits(
-        X, y, config.data, fold=1
-    )
+def run_final_model_training(config: BSSNNConfig, X_train_val: torch.Tensor, y_train_val: torch.Tensor, output_dir: Path) -> BSSNN:
+    """Train final model on the complete training+validation dataset.
     
+    This function trains the final model on the entire train_val dataset without
+    splitting it further. This is done after cross-validation has been used to
+    validate the model architecture and hyperparameters.
+    
+    Args:
+        config: Configuration object containing model and training parameters
+        X_train_val: Complete training+validation features tensor
+        y_train_val: Complete training+validation labels tensor
+        output_dir: Directory for saving outputs
+        
+    Returns:
+        Trained BSSNN model
+    """
+    # Initialize model with the same configuration used in cross-validation
     final_model = BSSNN(
         input_size=config.model.input_size,
-        hidden_size=config.model.hidden_size
+        hidden_size=config.model.hidden_size,
+        dropout_rate=config.model.dropout_rate
     )
     
+    # For final training, we'll use the same data for both training and "validation"
+    # This allows us to use the same training infrastructure while effectively
+    # training on all data
     trainer = run_training(
-        config, final_model,
-        X_train, X_val,
-        y_train, y_val,
-        is_final=True,
+        config=config,
+        model=final_model,
+        X_train=X_train_val,  # Use full train_val set for training
+        X_val=X_train_val,    # Use same data for validation
+        y_train=y_train_val,
+        y_val=y_train_val,
+        is_final=True,        # Flag indicating this is final training
         silent=False
     )
     

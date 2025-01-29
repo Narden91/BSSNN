@@ -9,6 +9,8 @@ import contextlib
 from rich import print
 import os
 
+from bssnn.model.bssnn import BSSNN
+
 class LogitModelWrapper(torch.nn.Module):
     """Wrapper to expose logits for SHAP explanations."""
     def __init__(self, original_model):
@@ -42,38 +44,39 @@ class LogitModelWrapper(torch.nn.Module):
             return logits.squeeze(-1) 
         raise ValueError("Unsupported model type")
 
+
 class BSSNNExplainer:
     """Explainer for BSSNN architectures with state-space support."""
     
-    def __init__(self, model: torch.nn.Module, feature_names: Optional[List[str]] = None):
+    def __init__(self, model: 'BSSNN', feature_names: Optional[List[str]] = None):
+        """Initialize the explainer with model and feature names.
+        
+        Args:
+            model: Trained BSSNN model instance
+            feature_names: Optional list of feature names
+        """
         self.model = model
         self.device = next(model.parameters()).device
         self.feature_names = feature_names or self._default_feature_names()
-        
-        # Validate feature names
-        if len(self.feature_names) != self.input_size:
-            raise ValueError(f"Expected {self.input_size} features, got {len(self.feature_names)}")
 
     @property
     def input_size(self) -> int:
-        """Get model input size dynamically."""
-        if hasattr(self.model, 'joint_network'):  # Original BSSNN
-            return self.model.joint_network[0].in_features
-        return self.model.fc1_joint.in_features  # StateSpaceBSSNN
-
+        """Get model input size from feature extractor."""
+        return self.model.feature_extractor[0].in_features
+        
     def _default_feature_names(self) -> List[str]:
+        """Generate default feature names if none provided."""
         return [f"Feature {i+1}" for i in range(self.input_size)]
 
-    def _get_feature_importance(self) -> np.ndarray:
-        """Calculate combined feature importance from both pathways."""
-        if hasattr(self.model, 'joint_network'):  # Original BSSNN
-            joint_weights = self.model.joint_network[0].weight.detach().cpu().numpy()
-            marginal_weights = self.model.marginal_network[0].weight.detach().cpu().numpy()
-        else:  # StateSpaceBSSNN
-            joint_weights = self.model.fc1_joint.weight.detach().cpu().numpy()
-            marginal_weights = self.model.fc1_marginal.weight.detach().cpu().numpy()
-            
-        return np.abs(joint_weights).mean(axis=0) + np.abs(marginal_weights).mean(axis=0)
+    def get_feature_importance(self) -> np.ndarray:
+        """Calculate feature importance from model weights.
+        
+        Returns:
+            Array of feature importance scores
+        """
+        with torch.no_grad():
+            importance = self.model._get_feature_importance()
+            return importance.cpu().numpy()
 
     def _compute_shap_values(self, X_train: torch.Tensor, X_val: torch.Tensor,
                         save_dir: Path) -> Dict[str, np.ndarray]:
@@ -89,23 +92,18 @@ class BSSNNExplainer:
         """
         self.model.eval()
         
+        # Define model wrapper for SHAP
         def model_wrapper(x):
             with torch.no_grad():
-                # Convert numpy array to tensor, ensure it's on CPU
                 x_tensor = torch.FloatTensor(x)
-                output = self.model(x_tensor)
-                # Return numpy array, ensuring correct shape for binary classification
-                return output.numpy().reshape(-1)
+                outputs, _ = self.model(x_tensor)
+                return outputs.cpu().numpy()
         
         try:
             # Ensure data is in numpy format before passing to SHAP
-            background = X_train[:100].numpy()
-            val_sample = X_val[:100].numpy()
-            
-            # Disable SHAP verbosity
-            import logging
-            logging.getLogger('shap').setLevel(logging.WARNING)
-            
+            background = X_train[:100].cpu().numpy()
+            val_sample = X_val[:100].cpu().numpy()
+                
             # Create explainer with minimal output
             explainer = shap.KernelExplainer(
                 model_wrapper, 
@@ -119,6 +117,7 @@ class BSSNNExplainer:
                 silent=True,
                 nsamples=100
             )
+            
             
             # Handle both single and multi-output cases
             if isinstance(shap_values, list):
@@ -211,26 +210,62 @@ class BSSNNExplainer:
         plt.tight_layout()
         plt.savefig(save_dir/"importance_comparison.png", bbox_inches='tight', dpi=150)
         plt.close()
+        
+    def _plot_feature_importance(self, importance: np.ndarray, save_dir: Path):
+        """Create and save feature importance visualization.
+        
+        Args:
+            importance: Feature importance scores
+            save_dir: Directory to save the plot
+        """
+        plt.figure(figsize=(10, 6))
+        plt.barh(range(len(importance)), importance)
+        plt.yticks(range(len(importance)), self.feature_names)
+        plt.xlabel('Importance Score')
+        plt.title('Feature Importance')
+        plt.tight_layout()
+        plt.savefig(save_dir/"feature_importance.png", bbox_inches='tight', dpi=300)
+        plt.close()
 
     def explain(self, X_train: torch.Tensor, X_val: torch.Tensor,
                 save_dir: Optional[str] = None) -> Dict[str, np.ndarray]:
-        """Generate comprehensive model explanations."""
-        print("[bold cyan]Generating explanations...[/bold cyan]")
-        results = {'feature_importance': self._get_feature_importance()}
+        """Generate comprehensive model explanations.
         
-        if save_dir:
-            save_path = Path(save_dir)
-            save_path.mkdir(parents=True, exist_ok=True)
+        Args:
+            X_train: Training data for background distribution
+            X_val: Validation data for explanations
+            save_dir: Optional directory to save visualizations
             
-            # Save feature importance
-            np.save(save_path/"direct_importance.npy", results['feature_importance'])
+        Returns:
+            Dictionary containing explanation results
+        """
+        print("[bold cyan]Generating explanations...[/bold cyan]")
+        results = {}
+        
+        try:
+            # Calculate feature importance
+            importance = self.get_feature_importance()
+            results['feature_importance'] = importance
             
-            # Compute and save SHAP values
-            shap_results = self._compute_shap_values(X_train, X_val, save_path)
-            results.update(shap_results)
-            
-            if shap_results['shap_values'].size > 0:
-                np.save(save_path/"shap_values.npy", shap_results['shap_values'])
+            if save_dir:
+                save_path = Path(save_dir)
+                save_path.mkdir(parents=True, exist_ok=True)
+                
+                # Save feature importance
+                np.save(save_path/"feature_importance.npy", importance)
+                
+                # Create visualization
+                self._plot_feature_importance(importance, save_path)
+                
+                # Add SHAP values if requested
+                if self.model.training:
+                    self.model.eval()
+                shap_results = self._compute_shap_values(X_train, X_val, save_path)
+                results.update(shap_results)
+                
+        except Exception as e:
+            print(f"[bold red]Error during explanation generation: {str(e)}[/bold red]")
+            print("[yellow]Falling back to basic feature importance...[/yellow]")
         
         print("[bold green]✓ Explanation complete[/bold green]")
         return results
