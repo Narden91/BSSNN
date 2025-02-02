@@ -263,32 +263,58 @@ class BSSNNTrainer:
     def evaluate(
         self,
         X_val: torch.Tensor,
-        y_val: torch.Tensor
+        y_val: torch.Tensor,
+        uncertainty_threshold: Optional[float] = None,
+        n_uncertainty_samples: int = 30
     ) -> Tuple[float, Dict[str, float]]:
-        """Evaluate the model with comprehensive metrics.
+        """Evaluate the model with comprehensive metrics including uncertainty estimation.
+        
+        This enhanced evaluation function provides both standard performance metrics
+        and uncertainty quantification. It uses Monte Carlo sampling for uncertainty
+        estimation when requested, while maintaining backward compatibility with the
+        original evaluation approach.
         
         Args:
-            X_val: Validation features
-            y_val: Validation targets
-            
+            X_val: Validation features tensor of shape (n_samples, n_features)
+            y_val: Validation targets tensor of shape (n_samples,)
+            uncertainty_threshold: Optional threshold for high uncertainty identification
+                If provided, samples with uncertainty above this threshold will be
+                flagged in the metrics dictionary. Range: [0, 1]
+            n_uncertainty_samples: Number of Monte Carlo samples for uncertainty
+                estimation. Only used if uncertainty_threshold is provided.
+                Default is 30 samples.
+        
         Returns:
-            Tuple of (validation loss, metrics dictionary)
+            Tuple containing:
+                - Validation loss (float)
+                - Dictionary of evaluation metrics including:
+                    * Standard metrics (accuracy, f1, etc.)
+                    * Uncertainty metrics if requested
+                    * Flagged samples count if threshold provided
+        
+        Raises:
+            ValueError: If uncertainty_threshold is not in [0, 1]
+            RuntimeError: If evaluation fails due to model or data issues
         """
         self.model.eval()
         
         try:
-            with torch.no_grad():
-                # Prepare batch
-                X_val, y_val = self._prepare_batch(X_val, y_val)
+            # Input validation
+            if uncertainty_threshold is not None and not 0 <= uncertainty_threshold <= 1:
+                raise ValueError("uncertainty_threshold must be between 0 and 1")
                 
-                # Forward pass
+            # Prepare batch
+            X_val, y_val = self._prepare_batch(X_val, y_val)
+            
+            with torch.no_grad():
+                # Standard forward pass
                 outputs, additional_outputs = self.model(X_val)
                 outputs = outputs.view(-1)
                 
-                # Calculate loss
+                # Calculate standard loss
                 val_loss = self.criterion(outputs, y_val)
                 
-                # Calculate metrics
+                # Calculate standard metrics
                 metrics = process_model_outputs(
                     outputs,
                     y_val,
@@ -296,11 +322,50 @@ class BSSNNTrainer:
                 )
                 metrics['val_loss'] = val_loss.item()
                 
+                # Calculate uncertainty metrics if requested
+                if uncertainty_threshold is not None:
+                    uncertainty_metrics = self.model.compute_uncertainty(
+                        X_val,
+                        n_samples=n_uncertainty_samples
+                    )
+                    
+                    # Extract and process uncertainty values
+                    epistemic_uncertainty = uncertainty_metrics['epistemic'].mean(dim=1)
+                    aleatoric_uncertainty = uncertainty_metrics['aleatoric'].mean(dim=1)
+                    total_uncertainty = uncertainty_metrics['total'].mean(dim=1)
+                    
+                    # Calculate uncertainty statistics
+                    metrics.update({
+                        'mean_epistemic_uncertainty': float(epistemic_uncertainty.mean()),
+                        'mean_aleatoric_uncertainty': float(aleatoric_uncertainty.mean()),
+                        'mean_total_uncertainty': float(total_uncertainty.mean()),
+                        'max_uncertainty': float(total_uncertainty.max()),
+                        'uncertainty_std': float(total_uncertainty.std()),
+                        'high_uncertainty_samples': int((total_uncertainty > uncertainty_threshold).sum()),
+                        'entropy': float(uncertainty_metrics['entropy'].mean()),
+                        'mutual_information': float(uncertainty_metrics['mutual_information'].mean())
+                    })
+                    
+                    # Calculate calibration metrics for uncertain predictions
+                    high_uncertainty_mask = total_uncertainty > uncertainty_threshold
+                    if high_uncertainty_mask.any():
+                        uncertain_preds = outputs[high_uncertainty_mask]
+                        uncertain_targets = y_val[high_uncertainty_mask]
+                        
+                        if len(uncertain_preds) > 0:
+                            uncertain_acc = (
+                                (uncertain_preds > 0.5).float() == uncertain_targets
+                            ).float().mean()
+                            metrics['high_uncertainty_accuracy'] = float(uncertain_acc)
+                
                 return val_loss.item(), metrics
                 
         except Exception as e:
             print(f"\nError during evaluation: {str(e)}")
-            return float('inf'), {'error': str(e)}
+            return float('inf'), {
+                'error': str(e),
+                'val_loss': float('inf')
+            }
 
 
 def run_training(

@@ -287,10 +287,16 @@ def run_explanations(config, model, X_train: torch.Tensor,
     print("\n[bold blue]Generating Model Explanations...[/bold blue]")
     
     try:
+        # Verify model attributes before proceeding
+        required_attributes = ['feature_extractor', 'linear_path']
+        for attr in required_attributes:
+            if not hasattr(model, attr):
+                raise AttributeError(f"Model missing required attribute: {attr}")
+        
         feature_names = getattr(config.explainability, 'feature_names', None)
         explainer = BSSNNExplainer(model, feature_names)
         
-        with torch.no_grad():  # Ensure no gradients are computed during explanation
+        with torch.no_grad():
             results = explainer.explain(X_train, X_val, save_dir)
         
         if save_dir:
@@ -302,8 +308,9 @@ def run_explanations(config, model, X_train: torch.Tensor,
         print(f"[bold red]Error during explanation generation: {str(e)}[/bold red]")
         print("[yellow]Falling back to basic feature importance analysis...[/yellow]")
         
-        # Return basic feature importance when full explanation fails
+        # Return basic feature importance as fallback
         return {
-            'feature_importance': model._get_feature_importance(),
-            'feature_names': feature_names or [f"Feature {i+1}" for i in range(X_train.shape[1])]
+            'feature_importance': model._get_feature_importance().cpu().numpy(),
+            'feature_names': feature_names or [f"Feature {i+1}" 
+                                             for i in range(X_train.shape[1])]
         }

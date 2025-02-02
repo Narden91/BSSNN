@@ -229,18 +229,62 @@ class BSSNN(nn.Module):
             'non_negativity_loss': non_negativity_loss.item()
         }
     
-    def compute_uncertainty(self, log_joint: torch.Tensor) -> torch.Tensor:
-        """Compute prediction uncertainty using entropy.
+    def compute_uncertainty(self, x: torch.Tensor, n_samples: int = 30) -> Dict[str, torch.Tensor]:
+        """Compute comprehensive uncertainty metrics using Monte Carlo Dropout.
+        
+        This method captures both epistemic uncertainty (model uncertainty) through 
+        MC Dropout and aleatoric uncertainty (data uncertainty) through entropy
+        calculation.
         
         Args:
-            log_joint: Log joint probabilities
+            x: Input tensor of shape (batch_size, input_features)
+            n_samples: Number of Monte Carlo samples for uncertainty estimation
             
         Returns:
-            Uncertainty scores
+            Dictionary containing various uncertainty metrics
         """
-        probs = torch.softmax(log_joint, dim=1)
-        entropy = -torch.sum(probs * torch.log(probs + 1e-10), dim=1)
-        return entropy
+        self.train()  # Enable dropout for MC sampling
+        mc_outputs = []
+        
+        with torch.no_grad():
+            for _ in range(n_samples):
+                outputs, _ = self.forward(x)
+                mc_outputs.append(outputs.unsqueeze(0))
+            
+            # Stack MC samples
+            mc_outputs = torch.cat(mc_outputs, dim=0)
+            
+            # Compute mean prediction and variance
+            mean_pred = mc_outputs.mean(dim=0)
+            var_pred = mc_outputs.var(dim=0)
+            
+            # Epistemic uncertainty (model uncertainty)
+            epistemic_uncertainty = var_pred
+            
+            # Aleatoric uncertainty (data uncertainty)
+            aleatoric_uncertainty = mean_pred * (1 - mean_pred)
+            
+            # Total uncertainty
+            total_uncertainty = epistemic_uncertainty + aleatoric_uncertainty
+            
+            # Predictive entropy for overall uncertainty
+            entropy = -(mean_pred * torch.log(mean_pred + 1e-10) + 
+                       (1 - mean_pred) * torch.log(1 - mean_pred + 1e-10))
+            
+            # Mutual information for epistemic uncertainty
+            mutual_info = entropy + (mean_pred * torch.log(mean_pred + 1e-10)).mean(0)
+            
+        self.eval()  # Restore eval mode
+        
+        return {
+            'epistemic': epistemic_uncertainty,
+            'aleatoric': aleatoric_uncertainty,
+            'total': total_uncertainty,
+            'entropy': entropy,
+            'mutual_information': mutual_info,
+            'mean_prediction': mean_pred,
+            'prediction_variance': var_pred
+        }
     
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         """Forward pass implementing Bayesian probability computations.
@@ -258,36 +302,19 @@ class BSSNN(nn.Module):
         Returns:
             Tuple of (conditional probabilities, additional outputs)
         """
-        # Extract and combine features
         features = self._combine_features(x)
-        
-        # Compute log probabilities with stability checks
         log_joint = self.joint_network(features)
+        probs = torch.softmax(log_joint, dim=1)
         
-        # Apply log-space computations
-        log_marginal = self.compute_marginal_probability(log_joint)
-        log_conditional = log_joint - log_marginal
-        
-        # Convert to probabilities with stable exp
-        probs = torch.exp(log_conditional)
-        
-        # Apply graduated clamping for extreme values
-        eps = torch.finfo(probs.dtype).eps
-        probs = torch.where(
-            probs < eps,
-            torch.full_like(probs, eps) + eps * torch.rand_like(probs),
-            probs
-        )
-        probs = torch.where(
-            probs > 1 - eps,
-            torch.full_like(probs, 1 - eps) - eps * torch.rand_like(probs),
-            probs
-        )
+        # Compute uncertainties during inference
+        if not self.training:
+            uncertainty_metrics = self.compute_uncertainty(x)
+        else:
+            uncertainty_metrics = {}
         
         outputs = {
             'log_joint': log_joint,
-            'log_marginal': log_marginal,
-            'log_conditional': log_conditional
+            'uncertainty_metrics': uncertainty_metrics
         }
         
         return probs[:, 1], outputs
