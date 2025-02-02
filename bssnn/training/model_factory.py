@@ -34,5 +34,7 @@ def create_model(config: BSSNNConfig) -> nn.Module:
         return BSSNN(
             input_size=config.model.input_size,
             hidden_size=config.model.hidden_size,
-            dropout_rate=config.model.dropout_rate
+            dropout_rate=config.model.dropout_rate,
+            sparse_threshold=config.model.sparse_threshold,
+            use_sparse=config.model.use_sparse
         )

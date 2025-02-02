@@ -55,6 +55,8 @@ class ModelConfig:
     output_classes: int = 2
     kl_weight: float = 0.01
     prior_strength: float = 0.5
+    sparse_threshold: float = 0.01
+    use_sparse: bool = False
 
     def __post_init__(self):
         """Validate configuration parameters after initialization.
@@ -89,6 +91,8 @@ class ModelConfig:
             raise ValueError("kl_weight must be non-negative")
         if not (0 <= self.prior_strength <= 1):
             raise ValueError("prior_strength must be between 0 and 1")
+        if not (0 <= self.sparse_threshold <= 1):
+            raise ValueError("sparse_threshold must be between 0 and 1")
         
         print("[bold green]Model configuration validated successfully[/bold green]")
     

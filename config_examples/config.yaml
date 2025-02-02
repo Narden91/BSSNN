@@ -12,6 +12,8 @@ model:
   output_classes: 2
   kl_weight: 0.01    # Controls KL divergence regularization strength
   prior_strength: 0.3 # Controls bias towards uniform distribution
+  sparse_threshold: 0.01
+  use_sparse: true
 
 training:
   num_epochs: 100

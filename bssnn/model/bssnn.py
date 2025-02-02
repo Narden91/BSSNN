@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Tuple, Dict
+from typing import Optional, Tuple, Dict
 
 
 class BSSNN(nn.Module):
@@ -14,18 +14,28 @@ class BSSNN(nn.Module):
     4. Gated mixing of linear and nonlinear components
     """
     
-    def __init__(self, input_size: int, hidden_size: int, dropout_rate: float = 0.2):
+    def __init__(self, input_size: int, hidden_size: int, dropout_rate: float = 0.2,
+                 batch_size: int = 32, sparse_threshold: float = 0.01,
+                 use_sparse: bool = False):
         """Initialize the enhanced BSSNN model.
         
         Args:
             input_size: Number of input features
             hidden_size: Size of hidden layers
             dropout_rate: Dropout probability
+            batch_size: Size of batches for processing (default: 32)
+            sparse_threshold: Threshold for sparse computations (default: 0.01)
+            use_sparse: Whether to use sparse computations (default: False)
         """
         super(BSSNN, self).__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.dropout_rate = dropout_rate
+        self.sparse_threshold = sparse_threshold
+        self.use_sparse = use_sparse
+        
+        # Cache for state computations
+        self.state_cache = {}
         
         # Linear pathway
         self.linear_path = nn.Linear(input_size, hidden_size)
@@ -63,6 +73,48 @@ class BSSNN(nn.Module):
         self.skip_scale = nn.Parameter(torch.ones(1))
         
         self._init_weights()
+        
+    def _process_batch(self, x: torch.Tensor) -> torch.Tensor:
+        """Process a single batch of data efficiently."""
+        if self.use_sparse:
+            sparse_mask = (torch.abs(x) > self.sparse_threshold).float()
+            x = x * sparse_mask
+            
+        # Process through linear pathway with caching
+        cache_key = f"linear_{x.shape[0]}"
+        if cache_key not in self.state_cache:
+            self.state_cache[cache_key] = self.linear_path(x)
+        linear_features = self.state_cache[cache_key]
+        
+        # Process through nonlinear pathway
+        nonlinear_features = self.feature_extractor(x)
+        
+        # Compute gate weights
+        combined = torch.cat([linear_features, nonlinear_features], dim=1)
+        gate_weights = self.gate(combined)
+        
+        # Mix features
+        mixed_features = (gate_weights * linear_features + 
+                         (1 - gate_weights) * nonlinear_features)
+        
+        return mixed_features
+
+    def _efficient_forward(self, x: torch.Tensor, batch_size: Optional[int] = None) -> torch.Tensor:
+        """Efficient forward pass with batch processing."""
+        current_batch_size = x.size(0)
+        processing_batch_size = batch_size or current_batch_size
+        
+        if current_batch_size <= processing_batch_size:
+            return self._process_batch(x)
+            
+        outputs = []
+        for i in range(0, current_batch_size, processing_batch_size):
+            batch = x[i:i + processing_batch_size]
+            batch_output = self._process_batch(batch)
+            outputs.append(batch_output)
+            
+        return torch.cat(outputs, dim=0)
+
     
     def _init_weights(self):
         """Initialize network weights with improved stability.
@@ -286,7 +338,7 @@ class BSSNN(nn.Module):
             'prediction_variance': var_pred
         }
     
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+    def forward(self, x: torch.Tensor, batch_size: Optional[int] = None) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         """Forward pass implementing Bayesian probability computations.
         
         The forward pass ensures proper probability relationships while handling both
@@ -302,8 +354,14 @@ class BSSNN(nn.Module):
         Returns:
             Tuple of (conditional probabilities, additional outputs)
         """
-        features = self._combine_features(x)
-        log_joint = self.joint_network(features)
+        mixed_features = self._efficient_forward(x, batch_size)
+        
+        # Clear cache periodically
+        if len(self.state_cache) > 100:
+            self.state_cache.clear()
+        
+        # Process through joint network
+        log_joint = self.joint_network(mixed_features)
         probs = torch.softmax(log_joint, dim=1)
         
         # Compute uncertainties during inference
@@ -311,10 +369,25 @@ class BSSNN(nn.Module):
             uncertainty_metrics = self.compute_uncertainty(x)
         else:
             uncertainty_metrics = {}
-        
+            
         outputs = {
             'log_joint': log_joint,
             'uncertainty_metrics': uncertainty_metrics
         }
         
         return probs[:, 1], outputs
+    
+    def train(self, mode: bool = True):
+        """Enhanced training mode setter with cache management."""
+        super().train(mode)
+        if mode:
+            # Clear cache when entering training mode
+            self.state_cache.clear()
+        return self
+        
+    def eval(self):
+        """Enhanced eval mode setter with optimization."""
+        super().eval()
+        # Prepare cache for evaluation
+        self.state_cache.clear()
+        return self

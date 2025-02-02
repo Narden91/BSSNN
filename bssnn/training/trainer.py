@@ -27,6 +27,7 @@ class BSSNNTrainer:
         early_stopping_min_delta: float = 1e-4,
         early_stopping_metric: str = 'val_loss',
         device: Optional[torch.device] = None,
+        batch_size: int = 32,
         **kwargs  # Add this to handle additional config parameters
     ):
         """Initialize the trainer with enhanced configuration.
@@ -45,18 +46,16 @@ class BSSNNTrainer:
         self.model = model
         self.device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.model.to(self.device)
+        self.batch_size = batch_size  # Store batch_size as instance attribute
         
-        # Initialize optimizer
         self.optimizer = optimizer or optim.Adam(
             model.parameters(),
             lr=lr,
             weight_decay=weight_decay
         )
         
-        # Initialize criterion
         self.criterion = nn.BCEWithLogitsLoss()
         
-        # Initialize early stopping with enhanced monitor
         self.early_stopping = EarlyStoppingMonitor(
             patience=early_stopping_patience,
             min_delta=early_stopping_min_delta,
@@ -64,7 +63,6 @@ class BSSNNTrainer:
             metric_name=early_stopping_metric
         )
         
-        # Initialize training history
         self.history = {
             'train_loss': [],
             'val_loss': [],
@@ -170,14 +168,11 @@ class BSSNNTrainer:
         epoch_metrics = {}
         
         try:
-            # Prepare batch
             X_train, y_train = self._prepare_batch(X_train, y_train)
-            
-            # Clear gradients
             self.optimizer.zero_grad()
             
             # Forward pass
-            outputs, additional_outputs = self.model(X_train)
+            outputs, additional_outputs = self.model(X_train, batch_size=self.batch_size)
             outputs = outputs.view(-1)
             
             # Calculate loss
@@ -406,21 +401,19 @@ def run_training(
         weight_decay=config.model.weight_decay,
         early_stopping_patience=config.model.early_stopping_patience,
         early_stopping_min_delta=config.model.early_stopping_min_delta,
-        early_stopping_metric='val_loss'  # We now specify the metric to monitor
+        early_stopping_metric='val_loss',
+        batch_size=config.training.batch_size  # Pass batch_size from configuration
     )
     
-    # Create progress tracker with fold information
     progress = TrainingProgress(
         total_epochs=config.training.num_epochs,
         display_metrics=config.training.display_metrics,
         fold=fold
     )
     
-    # Define progress callback
     def update_progress(epoch: int, loss: float, metrics: dict):
         progress.update(epoch, loss, metrics)
     
-    # Train the model
     trainer.train(
         X_train=X_train,
         y_train=y_train,
@@ -430,7 +423,6 @@ def run_training(
         callback=update_progress
     )
     
-    # Complete progress
     val_loss, final_metrics = trainer.evaluate(X_val, y_val)
     progress.complete(trainer.early_stopping.best_score, final_metrics)
     
