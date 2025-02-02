@@ -62,31 +62,47 @@ class BSSNN(nn.Module):
         self._init_weights()
     
     def _init_weights(self):
-        """Initialize network weights using a combination of He and Xavier initialization.
+        """Initialize network weights with improved stability.
         
-        We use different initialization strategies for different parts of the network:
-        - Xavier uniform for linear pathways to maintain variance
-        - He initialization for nonlinear pathways to handle activation functions
+        Uses Kaiming initialization for ReLU layers and Xavier for linear layers.
+        Initializes gates with small weights to start close to identity mapping.
         """
         for module in self.modules():
             if isinstance(module, nn.Linear):
-                if getattr(module, 'bias', None) is not None:
-                    nn.init.zeros_(module.bias)
-                    
-                # Use Xavier for linear path and He for nonlinear path
                 if module is self.linear_path:
+                    # Xavier for linear pathway
                     nn.init.xavier_uniform_(module.weight)
                 else:
+                    # He initialization for nonlinear pathway
                     nn.init.kaiming_normal_(module.weight, nonlinearity='relu')
                     
-    def _combine_features(self, x: torch.Tensor) -> torch.Tensor:
-        """Combine linear and nonlinear features using gated mechanism.
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
         
-        The key change is that we now project the skip connection to match
-        the hidden dimension before adding it to the mixed features.
+        # Initialize gate layers with small weights
+        for gate_layer in self.gate:
+            if isinstance(gate_layer, nn.Linear):
+                # Initialize close to 0.5 to start with equal mixing
+                nn.init.constant_(gate_layer.weight, 0.0)
+                if gate_layer.bias is not None:
+                    nn.init.constant_(gate_layer.bias, 0.0)
+        
+        # Initialize skip connection scale with proper bounds
+        with torch.no_grad():
+            self.skip_scale.data.fill_(0.5)
+                    
+    def _combine_features(self, x: torch.Tensor) -> torch.Tensor:
+        """Combine linear and nonlinear features with improved stability.
+        
+        Args:
+            x: Input tensor
+        
+        Returns:
+            Combined features tensor
         """
-        # Linear pathway
+        # Linear pathway with normalization
         linear_features = self.linear_path(x)
+        linear_features = F.layer_norm(linear_features, linear_features.shape[1:])
         
         # Nonlinear pathway
         nonlinear_features = self.feature_extractor(x)
@@ -94,18 +110,19 @@ class BSSNN(nn.Module):
         # Concatenate features for gating
         combined = torch.cat([linear_features, nonlinear_features], dim=1)
         
-        # Compute mixing weights
+        # Compute mixing weights with gradient clipping
         gate_weights = self.gate(combined)
+        gate_weights = torch.clamp(gate_weights, 0.1, 0.9)  # Prevent extreme values
         
-        # Mix features with learned gating
+        # Mix features with normalized gate weights
         mixed_features = (gate_weights * linear_features + 
-                         (1 - gate_weights) * nonlinear_features)
+                        (1 - gate_weights) * nonlinear_features)
         
-        # Project skip connection to match hidden dimension
+        # Apply bounded skip connection
+        skip_scale = torch.sigmoid(self.skip_scale)  # Bound between 0 and 1
         skip_connection = self.skip_projection(x)
         
-        # Add skip connection with learnable scaling
-        return mixed_features + self.skip_scale * skip_connection
+        return mixed_features + skip_scale * skip_connection
     
     def compute_marginal_probability(self, log_joint: torch.Tensor) -> torch.Tensor:
         """Compute log marginal probability using the log-sum-exp trick.
