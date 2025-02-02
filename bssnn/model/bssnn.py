@@ -23,6 +23,9 @@ class BSSNN(nn.Module):
             dropout_rate: Dropout probability
         """
         super(BSSNN, self).__init__()
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.dropout_rate = dropout_rate
         
         # Linear pathway
         self.linear_path = nn.Linear(input_size, hidden_size)
@@ -125,37 +128,86 @@ class BSSNN(nn.Module):
         return mixed_features + skip_scale * skip_connection
     
     def compute_marginal_probability(self, log_joint: torch.Tensor) -> torch.Tensor:
-        """Compute log marginal probability using the log-sum-exp trick.
+        """Compute log marginal probability with enhanced numerical stability.
+        
+        This implementation uses the log-sum-exp trick with double precision and 
+        careful handling of edge cases. It maintains numerical stability even with
+        very small or large probabilities.
         
         Args:
-            log_joint: Unnormalized log joint probabilities (logits)
+            log_joint: Unnormalized log joint probabilities
             
         Returns:
-            Log marginal probabilities
+            Log marginal probabilities with guaranteed numerical stability
         """
-        # Using log-sum-exp for numerical stability
-        return torch.logsumexp(log_joint, dim=1, keepdim=True)
+        # Convert to double precision for stability
+        log_joint = log_joint.double()
+        
+        # Find maximum value for numerical stability
+        max_val = torch.max(log_joint, dim=1, keepdim=True)[0]
+        
+        # Compute log-sum-exp with stable subtraction
+        stable_exp = torch.exp(log_joint - max_val)
+        marginal = max_val + torch.log(stable_exp.sum(dim=1, keepdim=True))
+        
+        # Handle potential infinities and NaNs
+        marginal = torch.where(
+            torch.isinf(marginal) | torch.isnan(marginal),
+            max_val,
+            marginal
+        )
+        
+        return marginal.float()
     
     def _get_feature_importance(self) -> torch.Tensor:
-        """Calculate feature importance scores based on the model's weights.
+        """Calculate comprehensive feature importance scores.
         
-        The importance scores are calculated by analyzing the impact of each input
-        feature through both the feature extractor and joint network pathways.
+        This implementation considers:
+        1. Direct linear pathway contributions
+        2. Nonlinear pathway interactions
+        3. Skip connection influence
+        4. Gate utilization patterns
+        5. Feature interaction effects
         
         Returns:
-            Tensor containing importance score for each input feature
+            Tensor containing comprehensive importance scores for each feature
         """
-        # Get feature extractor weights from first layer
-        feature_weights = self.feature_extractor[0].weight.detach()  # From input to hidden
-        
-        # Get joint network contribution
-        joint_weights = self.joint_network[0].weight.detach()  # From hidden to output
-        
-        # Compute importance through network paths
-        # Aggregate impact through hidden layers using matrix multiplication
-        importance = torch.mm(joint_weights.t(), feature_weights).abs().mean(dim=0)
-        
-        return importance
+        with torch.no_grad():
+            # Get linear pathway contributions
+            linear_weights = torch.abs(self.linear_path.weight)
+            linear_importance = linear_weights.mean(dim=0)
+            
+            # Get nonlinear pathway first layer weights
+            nonlinear_weights = torch.abs(self.feature_extractor[0].weight)
+            nonlinear_importance = nonlinear_weights.mean(dim=0)
+            
+            # Get skip connection influence
+            skip_weights = torch.abs(self.skip_projection.weight)
+            skip_importance = skip_weights.mean(dim=0)
+            
+            # Calculate gate utilization for each feature
+            gate_weights = torch.abs(self.gate[0].weight)
+            gate_importance = gate_weights[:self.hidden_size].mean(dim=0)
+            
+            # Combine importance scores with learned weights
+            total_importance = (
+                linear_importance +
+                nonlinear_importance +
+                self.skip_scale.sigmoid() * skip_importance +
+                gate_importance
+            )
+            
+            # Add second-order feature interaction terms
+            feature_interactions = torch.mm(
+                nonlinear_weights.t(),
+                nonlinear_weights
+            ).diagonal()
+            
+            # Normalize importance scores
+            final_importance = (total_importance + 0.1 * feature_interactions)
+            final_importance = final_importance / final_importance.sum()
+            
+            return final_importance
     
     def compute_consistency_loss(self, log_joint: torch.Tensor) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         """Compute consistency loss to enforce Bayesian probability rules."""
@@ -209,24 +261,33 @@ class BSSNN(nn.Module):
         # Extract and combine features
         features = self._combine_features(x)
         
-        # Compute log joint probabilities (logits)
+        # Compute log probabilities with stability checks
         log_joint = self.joint_network(features)
         
-        # Compute probabilities with numerical stability
-        probs = torch.softmax(log_joint, dim=1)
-        probs = probs.clamp(min=1e-7, max=1-1e-7)
+        # Apply log-space computations
+        log_marginal = self.compute_marginal_probability(log_joint)
+        log_conditional = log_joint - log_marginal
         
-        # Compute consistency metrics
-        consistency_loss, consistency_info = self.compute_consistency_loss(log_joint)
+        # Convert to probabilities with stable exp
+        probs = torch.exp(log_conditional)
         
-        # Store outputs
+        # Apply graduated clamping for extreme values
+        eps = torch.finfo(probs.dtype).eps
+        probs = torch.where(
+            probs < eps,
+            torch.full_like(probs, eps) + eps * torch.rand_like(probs),
+            probs
+        )
+        probs = torch.where(
+            probs > 1 - eps,
+            torch.full_like(probs, 1 - eps) - eps * torch.rand_like(probs),
+            probs
+        )
+        
         outputs = {
             'log_joint': log_joint,
-            'consistency_loss': float(consistency_loss),
-            'uncertainty': float(self.compute_uncertainty(log_joint).mean().item()),
-            'sum_constraint': float(consistency_info['sum_constraint_loss']),
-            'non_negativity': float(consistency_info['non_negativity_loss']),
-            'gate_values': self.gate[0].weight.abs().mean().item()
+            'log_marginal': log_marginal,
+            'log_conditional': log_conditional
         }
         
         return probs[:, 1], outputs
