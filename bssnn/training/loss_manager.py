@@ -1,6 +1,6 @@
 # loss_manager.py
 from dataclasses import dataclass
-from typing import Dict, Optional, Tuple, Union
+from typing import Any, Dict, Optional, Tuple, Union
 import torch
 import torch.nn as nn
 
@@ -12,44 +12,71 @@ class LossWeights:
     kl_weight: float = 0.01
     consistency_weight: float = 0.1
     prior_strength: float = 0.5
+    temperature_scale: float = 1.0
 
 
 class LossManager:
-    """Manages the calculation and combination of different loss components."""
+    """Enhanced loss manager supporting both binary and multiclass scenarios."""
     
     def __init__(
         self,
         weights: LossWeights,
+        num_classes: int = 2,
         criterion: Optional[nn.Module] = None
     ):
         """Initialize the loss manager.
         
         Args:
             weights: Configuration for loss component weights
-            criterion: Optional custom criterion (defaults to BCEWithLogitsLoss)
+            num_classes: Number of output classes
+            criterion: Optional custom criterion
         """
         self.weights = weights
-        self.criterion = criterion or nn.BCEWithLogitsLoss()
+        self.num_classes = num_classes
+        self.criterion = criterion or (
+            nn.BCEWithLogitsLoss() if num_classes == 2
+            else nn.CrossEntropyLoss()
+        )
     
     def calculate_main_loss(
         self,
-        outputs: torch.Tensor,
+        logits: torch.Tensor,
         targets: torch.Tensor
     ) -> torch.Tensor:
-        """Calculate the main classification loss."""
-        return self.criterion(outputs, targets)
+        """Calculate the main classification loss.
+        
+        Args:
+            logits: Model output logits
+            targets: Target values
+            
+        Returns:
+            Classification loss
+        """
+        if self.num_classes == 2:
+            # Binary case: ensure proper shape
+            logits = logits.view(-1)
+            return self.criterion(logits, targets)
+        else:
+            # Multiclass case
+            return self.criterion(logits, targets.long())
     
     def calculate_kl_divergence(
         self,
         probs: torch.Tensor
     ) -> torch.Tensor:
-        """Calculate KL divergence from uniform prior."""
+        """Calculate KL divergence from uniform prior for any number of classes.
+        
+        Args:
+            probs: Predicted probabilities
+            
+        Returns:
+            KL divergence loss
+        """
         # Create uniform prior distribution
         prior = torch.full_like(
             probs,
-            self.weights.prior_strength * 0.5
+            self.weights.prior_strength / self.num_classes
         )
-        prior = prior / prior.sum(dim=1, keepdim=True)
         
         # Calculate KL divergence with numerical stability
         eps = torch.finfo(probs.dtype).eps
@@ -66,7 +93,14 @@ class LossManager:
         self,
         probs: torch.Tensor
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
-        """Calculate probability consistency constraints."""
+        """Calculate probability consistency constraints for any number of classes.
+        
+        Args:
+            probs: Predicted probabilities
+            
+        Returns:
+            Tuple of (consistency loss, constraint metrics)
+        """
         # Probability sum constraint
         prob_sum = probs.sum(dim=1)
         sum_constraint = torch.nn.functional.mse_loss(
@@ -74,14 +108,24 @@ class LossManager:
             torch.ones_like(prob_sum)
         )
         
-        # Non-negativity constraint (should be satisfied by softmax)
+        # Non-negativity constraint
         non_negativity = torch.mean(
             torch.nn.functional.relu(-probs)
         )
         
-        # Combine constraints
-        consistency_loss = sum_constraint + non_negativity
+        # Entropy regularization for multiclass
+        if self.num_classes > 2:
+            entropy = -(probs * torch.log(probs + 1e-10)).sum(dim=1).mean()
+            consistency_loss = sum_constraint + non_negativity + 0.1 * entropy
+            
+            return consistency_loss, {
+                'sum_constraint_loss': float(sum_constraint.item()),
+                'non_negativity_loss': float(non_negativity.item()),
+                'entropy_loss': float(entropy.item())
+            }
         
+        # Binary case
+        consistency_loss = sum_constraint + non_negativity
         return consistency_loss, {
             'sum_constraint_loss': float(sum_constraint.item()),
             'non_negativity_loss': float(non_negativity.item())
@@ -89,30 +133,30 @@ class LossManager:
     
     def compute_total_loss(
         self,
-        outputs: torch.Tensor,
+        logits: torch.Tensor,
         targets: torch.Tensor,
         additional_outputs: Optional[Dict[str, torch.Tensor]] = None
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         """Compute total loss combining all components.
         
         Args:
-            outputs: Model outputs (logits)
+            logits: Model output logits
             targets: Target values
-            additional_outputs: Additional model outputs including probabilities
+            additional_outputs: Additional model outputs
             
         Returns:
             Tuple of (total loss tensor, loss components dictionary)
         """
-        # Calculate main loss
-        main_loss = self.calculate_main_loss(outputs, targets)
+        # Calculate main loss with temperature scaling
+        scaled_logits = logits / self.weights.temperature_scale
+        main_loss = self.calculate_main_loss(scaled_logits, targets)
         loss_dict = {'main_loss': main_loss.item()}
         
         # Initialize total loss
         total_loss = self.weights.main_loss * main_loss
         
-        if additional_outputs and 'log_joint' in additional_outputs:
-            # Get probabilities
-            probs = torch.softmax(additional_outputs['log_joint'], dim=1)
+        if additional_outputs and 'probabilities' in additional_outputs:
+            probs = additional_outputs['probabilities']
             
             # Add KL divergence
             kl_loss = self.calculate_kl_divergence(probs)
@@ -127,12 +171,6 @@ class LossManager:
         
         loss_dict['total_loss'] = total_loss.item()
         return total_loss, loss_dict
-
-
-# early_stopping.py
-from typing import Any, Callable, Optional, Union
-import torch
-import torch.nn as nn
 
 
 class EarlyStoppingMonitor:

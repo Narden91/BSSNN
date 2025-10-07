@@ -9,7 +9,7 @@ from rich import print
 from bssnn.config.config import BSSNNConfig
 from bssnn.training.loss_manager import EarlyStoppingMonitor
 from ..model.bssnn import BSSNN
-from .metrics import process_model_outputs
+from .metrics import calculate_metrics, process_model_outputs
 from ..visualization.visualization import TrainingProgress
 
 
@@ -27,26 +27,13 @@ class BSSNNTrainer:
         early_stopping_min_delta: float = 1e-4,
         early_stopping_metric: str = 'val_loss',
         device: Optional[torch.device] = None,
-        batch_size: int = 32,
-        **kwargs  # Add this to handle additional config parameters
+        batch_size: int = 32
     ):
-        """Initialize the trainer with enhanced configuration.
-        
-        Args:
-            model: BSSNN model instance
-            optimizer: Optional optimizer (defaults to Adam)
-            lr: Learning rate for default optimizer
-            weight_decay: L2 regularization factor
-            early_stopping_patience: Number of epochs to wait before stopping
-            early_stopping_min_delta: Minimum improvement for early stopping
-            early_stopping_metric: Metric to monitor for early stopping
-            device: Optional device for model and data
-            **kwargs: Additional configuration parameters (ignored but allowed for compatibility)
-        """
+        """Initialize trainer with multiclass support."""
         self.model = model
         self.device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.model.to(self.device)
-        self.batch_size = batch_size  # Store batch_size as instance attribute
+        self.batch_size = batch_size
         
         self.optimizer = optimizer or optim.Adam(
             model.parameters(),
@@ -54,7 +41,11 @@ class BSSNNTrainer:
             weight_decay=weight_decay
         )
         
-        self.criterion = nn.BCEWithLogitsLoss()
+        # Set appropriate criterion based on number of classes
+        self.criterion = (
+            nn.BCEWithLogitsLoss() if model.output_classes == 1  
+            else nn.CrossEntropyLoss()  
+        )
         
         self.early_stopping = EarlyStoppingMonitor(
             patience=early_stopping_patience,
@@ -152,18 +143,7 @@ class BSSNNTrainer:
         X_train: torch.Tensor,
         y_train: torch.Tensor
     ) -> Dict[str, float]:
-        """Train for one epoch with improved error handling and monitoring.
-        
-        Args:
-            X_train: Training features
-            y_train: Training targets
-            
-        Returns:
-            Dictionary containing training metrics
-            
-        Raises:
-            RuntimeError: If training fails due to model or optimizer issues
-        """
+        """Train for one epoch with multiclass support."""
         self.model.train()
         epoch_metrics = {}
         
@@ -172,11 +152,15 @@ class BSSNNTrainer:
             self.optimizer.zero_grad()
             
             # Forward pass
-            outputs, additional_outputs = self.model(X_train, batch_size=self.batch_size)
-            outputs = outputs.view(-1)
+            logits, additional_outputs = self.model(X_train)
             
-            # Calculate loss
-            loss = self.criterion(outputs, y_train)
+            # Calculate loss based on number of classes
+            if self.model.output_classes == 1:
+                # Binary: squeeze logits to [batch_size]
+                loss = self.criterion(logits.squeeze(), y_train.float())
+            else:
+                # Multi-class: logits shape [batch, classes], targets [batch]
+                loss = self.criterion(logits, y_train.long())
             
             # Backward pass with gradient clipping
             loss.backward()
@@ -187,10 +171,19 @@ class BSSNNTrainer:
             
             # Calculate training metrics
             with torch.no_grad():
-                epoch_metrics = process_model_outputs(
-                    outputs.detach(),
-                    y_train,
-                    additional_outputs
+                probs = additional_outputs['probabilities']
+                if self.model.output_classes == 2:
+                    y_pred = (probs[:, 1] >= 0.5).float()
+                    y_prob = probs[:, 1]
+                else:
+                    y_pred = torch.argmax(probs, dim=1)
+                    y_prob = probs
+                
+                epoch_metrics = calculate_metrics(
+                    y_true=y_train.cpu().numpy(),
+                    y_pred=y_pred.cpu().numpy(),
+                    y_prob=y_prob.cpu().numpy(),
+                    num_classes=self.model.output_classes
                 )
                 epoch_metrics['train_loss'] = loss.item()
             
@@ -259,108 +252,52 @@ class BSSNNTrainer:
         self,
         X_val: torch.Tensor,
         y_val: torch.Tensor,
-        uncertainty_threshold: Optional[float] = None,
-        n_uncertainty_samples: int = 30
+        uncertainty_threshold: Optional[float] = None
     ) -> Tuple[float, Dict[str, float]]:
-        """Evaluate the model with comprehensive metrics including uncertainty estimation.
-        
-        This enhanced evaluation function provides both standard performance metrics
-        and uncertainty quantification. It uses Monte Carlo sampling for uncertainty
-        estimation when requested, while maintaining backward compatibility with the
-        original evaluation approach.
-        
-        Args:
-            X_val: Validation features tensor of shape (n_samples, n_features)
-            y_val: Validation targets tensor of shape (n_samples,)
-            uncertainty_threshold: Optional threshold for high uncertainty identification
-                If provided, samples with uncertainty above this threshold will be
-                flagged in the metrics dictionary. Range: [0, 1]
-            n_uncertainty_samples: Number of Monte Carlo samples for uncertainty
-                estimation. Only used if uncertainty_threshold is provided.
-                Default is 30 samples.
-        
-        Returns:
-            Tuple containing:
-                - Validation loss (float)
-                - Dictionary of evaluation metrics including:
-                    * Standard metrics (accuracy, f1, etc.)
-                    * Uncertainty metrics if requested
-                    * Flagged samples count if threshold provided
-        
-        Raises:
-            ValueError: If uncertainty_threshold is not in [0, 1]
-            RuntimeError: If evaluation fails due to model or data issues
-        """
+        """Evaluate model with support for both binary and multiclass cases."""
         self.model.eval()
         
         try:
-            # Input validation
-            if uncertainty_threshold is not None and not 0 <= uncertainty_threshold <= 1:
-                raise ValueError("uncertainty_threshold must be between 0 and 1")
-                
-            # Prepare batch
             X_val, y_val = self._prepare_batch(X_val, y_val)
             
             with torch.no_grad():
-                # Standard forward pass
-                outputs, additional_outputs = self.model(X_val)
-                outputs = outputs.view(-1)
+                # Get model predictions
+                logits, additional_outputs = self.model(X_val)
+                probs = additional_outputs['probabilities']
                 
-                # Calculate standard loss
-                val_loss = self.criterion(outputs, y_val)
+                # Calculate loss
+                if self.model.output_classes == 2:
+                    val_loss = self.criterion(logits.view(-1), y_val)
+                    y_pred = (probs[:, 1] >= 0.5).float()
+                    y_prob = probs[:, 1]
+                else:
+                    val_loss = self.criterion(logits, y_val.long())
+                    y_pred = torch.argmax(probs, dim=1)
+                    y_prob = probs
                 
-                # Calculate standard metrics
-                metrics = process_model_outputs(
-                    outputs,
-                    y_val,
-                    additional_outputs
+                # Calculate metrics
+                metrics = calculate_metrics(
+                    y_true=y_val.cpu().numpy(),
+                    y_pred=y_pred.cpu().numpy(),
+                    y_prob=y_prob.cpu().numpy(),
+                    num_classes=self.model.output_classes
                 )
                 metrics['val_loss'] = val_loss.item()
                 
-                # Calculate uncertainty metrics if requested
+                # Add uncertainty metrics if requested
                 if uncertainty_threshold is not None:
-                    uncertainty_metrics = self.model.compute_uncertainty(
-                        X_val,
-                        n_samples=n_uncertainty_samples
-                    )
-                    
-                    # Extract and process uncertainty values
-                    epistemic_uncertainty = uncertainty_metrics['epistemic'].mean(dim=1)
-                    aleatoric_uncertainty = uncertainty_metrics['aleatoric'].mean(dim=1)
-                    total_uncertainty = uncertainty_metrics['total'].mean(dim=1)
-                    
-                    # Calculate uncertainty statistics
+                    uncertainty_metrics = self.model.compute_uncertainty(X_val)
                     metrics.update({
-                        'mean_epistemic_uncertainty': float(epistemic_uncertainty.mean()),
-                        'mean_aleatoric_uncertainty': float(aleatoric_uncertainty.mean()),
-                        'mean_total_uncertainty': float(total_uncertainty.mean()),
-                        'max_uncertainty': float(total_uncertainty.max()),
-                        'uncertainty_std': float(total_uncertainty.std()),
-                        'high_uncertainty_samples': int((total_uncertainty > uncertainty_threshold).sum()),
-                        'entropy': float(uncertainty_metrics['entropy'].mean()),
-                        'mutual_information': float(uncertainty_metrics['mutual_information'].mean())
+                        f'uncertainty_{k}': v.mean().item()
+                        for k, v in uncertainty_metrics.items()
+                        if torch.is_tensor(v)
                     })
-                    
-                    # Calculate calibration metrics for uncertain predictions
-                    high_uncertainty_mask = total_uncertainty > uncertainty_threshold
-                    if high_uncertainty_mask.any():
-                        uncertain_preds = outputs[high_uncertainty_mask]
-                        uncertain_targets = y_val[high_uncertainty_mask]
-                        
-                        if len(uncertain_preds) > 0:
-                            uncertain_acc = (
-                                (uncertain_preds > 0.5).float() == uncertain_targets
-                            ).float().mean()
-                            metrics['high_uncertainty_accuracy'] = float(uncertain_acc)
                 
                 return val_loss.item(), metrics
                 
         except Exception as e:
             print(f"\nError during evaluation: {str(e)}")
-            return float('inf'), {
-                'error': str(e),
-                'val_loss': float('inf')
-            }
+            return float('inf'), {'val_loss': float('inf')}
 
 
 def run_training(

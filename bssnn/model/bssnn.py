@@ -14,23 +14,26 @@ class BSSNN(nn.Module):
     4. Gated mixing of linear and nonlinear components
     """
     
-    def __init__(self, input_size: int, hidden_size: int, dropout_rate: float = 0.2,
-                 batch_size: int = 32, sparse_threshold: float = 0.01,
-                 use_sparse: bool = False):
+    def __init__(self, input_size: int, hidden_size: int, output_classes: int = 2,
+                 dropout_rate: float = 0.2, temperature: float = 1.0,
+                 sparse_threshold: float = 0.01, use_sparse: bool = False):
         """Initialize the enhanced BSSNN model.
         
         Args:
             input_size: Number of input features
             hidden_size: Size of hidden layers
+            output_classes: Number of output classes (default=2 for binary)
             dropout_rate: Dropout probability
-            batch_size: Size of batches for processing (default: 32)
-            sparse_threshold: Threshold for sparse computations (default: 0.01)
-            use_sparse: Whether to use sparse computations (default: False)
+            temperature: Temperature scaling parameter for calibration
+            sparse_threshold: Threshold for sparse computations
+            use_sparse: Whether to use sparse computations
         """
         super(BSSNN, self).__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
+        self.output_classes = output_classes
         self.dropout_rate = dropout_rate
+        self.temperature = nn.Parameter(torch.ones(1) * temperature)
         self.sparse_threshold = sparse_threshold
         self.use_sparse = use_sparse
         
@@ -40,10 +43,10 @@ class BSSNN(nn.Module):
         # Linear pathway
         self.linear_path = nn.Linear(input_size, hidden_size)
         
-        # Add skip connection projection
+        # Skip connection projection
         self.skip_projection = nn.Linear(input_size, hidden_size)
         
-        # Nonlinear pathway with feature extraction
+        # Feature extractor remains unchanged
         self.feature_extractor = nn.Sequential(
             nn.Linear(input_size, hidden_size),
             nn.BatchNorm1d(hidden_size),
@@ -55,21 +58,21 @@ class BSSNN(nn.Module):
             nn.Dropout(dropout_rate)
         )
         
-        # Gating mechanism for mixing linear and nonlinear features
+        # Gating mechanism
         self.gate = nn.Sequential(
             nn.Linear(hidden_size * 2, hidden_size),
             nn.Sigmoid()
         )
         
-        # Joint probability network
+        # Joint probability network (updated for multi-class)
         self.joint_network = nn.Sequential(
             nn.Linear(hidden_size, hidden_size // 2),
             nn.ELU(),
             nn.Dropout(dropout_rate),
-            nn.Linear(hidden_size // 2, 2)
+            nn.Linear(hidden_size // 2, output_classes)
         )
         
-        # Skip connection scaling factor (learnable)
+        # Skip connection scaling factor
         self.skip_scale = nn.Parameter(torch.ones(1))
         
         self._init_weights()
@@ -98,6 +101,25 @@ class BSSNN(nn.Module):
                          (1 - gate_weights) * nonlinear_features)
         
         return mixed_features
+    
+    def compute_calibrated_probabilities(self, logits: torch.Tensor) -> torch.Tensor:
+        """Compute calibrated probabilities using temperature scaling.
+        
+        Args:
+            logits: Raw logits from the model
+            
+        Returns:
+            Calibrated probability distribution
+        """
+        if self.output_classes == 2:
+            # Binary case: special handling for numerical stability
+            scaled_logits = logits / self.temperature
+            probs = torch.sigmoid(scaled_logits)
+            return torch.stack([1 - probs, probs], dim=1)
+        else:
+            # Multi-class case
+            scaled_logits = logits / self.temperature
+            return F.softmax(scaled_logits, dim=1)
 
     def _efficient_forward(self, x: torch.Tensor, batch_size: Optional[int] = None) -> torch.Tensor:
         """Efficient forward pass with batch processing."""
@@ -282,77 +304,68 @@ class BSSNN(nn.Module):
         }
     
     def compute_uncertainty(self, x: torch.Tensor, n_samples: int = 30) -> Dict[str, torch.Tensor]:
-        """Compute comprehensive uncertainty metrics using Monte Carlo Dropout.
-        
-        This method captures both epistemic uncertainty (model uncertainty) through 
-        MC Dropout and aleatoric uncertainty (data uncertainty) through entropy
-        calculation.
+        """Compute comprehensive uncertainty metrics for both binary and multi-class cases.
         
         Args:
-            x: Input tensor of shape (batch_size, input_features)
-            n_samples: Number of Monte Carlo samples for uncertainty estimation
+            x: Input tensor
+            n_samples: Number of Monte Carlo samples
             
         Returns:
-            Dictionary containing various uncertainty metrics
+            Dictionary containing uncertainty metrics
         """
-        self.train()  # Enable dropout for MC sampling
+        self.train()  # Enable dropout
         mc_outputs = []
         
         with torch.no_grad():
             for _ in range(n_samples):
-                outputs, _ = self.forward(x)
-                mc_outputs.append(outputs.unsqueeze(0))
+                logits, _ = self.forward(x)
+                mc_outputs.append(logits.unsqueeze(0))
             
             # Stack MC samples
             mc_outputs = torch.cat(mc_outputs, dim=0)
             
             # Compute mean prediction and variance
-            mean_pred = mc_outputs.mean(dim=0)
-            var_pred = mc_outputs.var(dim=0)
+            mean_probs = self.compute_calibrated_probabilities(mc_outputs.mean(dim=0))
             
-            # Epistemic uncertainty (model uncertainty)
-            epistemic_uncertainty = var_pred
-            
-            # Aleatoric uncertainty (data uncertainty)
-            aleatoric_uncertainty = mean_pred * (1 - mean_pred)
+            if self.output_classes == 2:
+                # Binary case
+                var_pred = mc_outputs.var(dim=0)
+                epistemic = var_pred
+                aleatoric = mean_probs[:, 1] * (1 - mean_probs[:, 1])
+            else:
+                # Multi-class case
+                var_pred = mc_outputs.var(dim=0)
+                epistemic = var_pred.mean(dim=1)  # Average over classes
+                aleatoric = -(mean_probs * torch.log(mean_probs + 1e-10)).sum(dim=1)
             
             # Total uncertainty
-            total_uncertainty = epistemic_uncertainty + aleatoric_uncertainty
+            total_uncertainty = epistemic + aleatoric
             
-            # Predictive entropy for overall uncertainty
-            entropy = -(mean_pred * torch.log(mean_pred + 1e-10) + 
-                       (1 - mean_pred) * torch.log(1 - mean_pred + 1e-10))
+            # Entropy and mutual information
+            entropy = -(mean_probs * torch.log(mean_probs + 1e-10)).sum(dim=1)
+            mutual_info = entropy - aleatoric
             
-            # Mutual information for epistemic uncertainty
-            mutual_info = entropy + (mean_pred * torch.log(mean_pred + 1e-10)).mean(0)
-            
-        self.eval()  # Restore eval mode
+        self.eval()
         
         return {
-            'epistemic': epistemic_uncertainty,
-            'aleatoric': aleatoric_uncertainty,
+            'epistemic': epistemic,
+            'aleatoric': aleatoric,
             'total': total_uncertainty,
             'entropy': entropy,
             'mutual_information': mutual_info,
-            'mean_prediction': mean_pred,
+            'mean_prediction': mean_probs,
             'prediction_variance': var_pred
         }
     
     def forward(self, x: torch.Tensor, batch_size: Optional[int] = None) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
-        """Forward pass implementing Bayesian probability computations.
-        
-        The forward pass ensures proper probability relationships while handling both
-        linear and nonlinear patterns through:
-        1. Feature extraction with parallel linear and nonlinear paths
-        2. Gated feature combination
-        3. Skip connection for preserving linear relationships
-        4. Proper probability normalization
+        """Forward pass with multi-class support and calibration.
         
         Args:
-            x: Input tensor of shape (batch_size, input_size)
+            x: Input tensor
+            batch_size: Optional batch size for processing
             
         Returns:
-            Tuple of (conditional probabilities, additional outputs)
+            Tuple of (logits, additional outputs)
         """
         mixed_features = self._efficient_forward(x, batch_size)
         
@@ -360,22 +373,25 @@ class BSSNN(nn.Module):
         if len(self.state_cache) > 100:
             self.state_cache.clear()
         
-        # Process through joint network
-        log_joint = self.joint_network(mixed_features)
-        probs = torch.softmax(log_joint, dim=1)
+        # Get raw logits
+        logits = self.joint_network(mixed_features)
+        
+        # Compute calibrated probabilities
+        probs = self.compute_calibrated_probabilities(logits)
         
         # Compute uncertainties during inference
         if not self.training:
             uncertainty_metrics = self.compute_uncertainty(x)
         else:
             uncertainty_metrics = {}
-            
+        
         outputs = {
-            'log_joint': log_joint,
+            'logits': logits,
+            'probabilities': probs,
             'uncertainty_metrics': uncertainty_metrics
         }
         
-        return probs[:, 1], outputs
+        return logits, outputs
     
     def train(self, mode: bool = True):
         """Enhanced training mode setter with cache management."""

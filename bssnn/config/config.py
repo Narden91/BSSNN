@@ -18,43 +18,38 @@ class ModelConfig:
     """Configuration for BSSNN model architecture.
     
     This class defines the model architecture parameters with comprehensive validation
-    for each field. The configuration supports both linear and nonlinear components
-    through carefully tuned hyperparameters.
+    for both binary and multiclass classification scenarios.
     
     Attributes:
         input_size: Number of input features (can be None initially)
         hidden_size: Size of hidden layers
-        state_size: Dimension of state space
-        num_state_layers: Number of state transition layers
+        output_classes: Number of output classes (default=2 for binary classification)
         dropout_rate: Dropout probability
         weight_decay: L2 regularization factor
         model_type: Type of BSSNN model ("bssnn" or "state_space_bssnn")
         early_stopping_patience: Number of epochs to wait before early stopping
         early_stopping_min_delta: Minimum change in validation loss for early stopping
         consistency_weight: Weight for the consistency loss term
-        output_classes: Number of output classes
-        kl_weight: Weight for the KL divergence loss term (default: 0.01)
-            Controls the strength of the regularization towards the prior distribution.
-            Smaller values allow more flexible learning, while larger values enforce
-            stronger regularization.
-        prior_strength: Strength of the uniform prior (default: 0.5)
-            Controls how strongly the model is biased towards uniform predictions.
-            Values closer to 1.0 enforce stronger uniformity, while values closer to
-            0.0 allow more peaked distributions.
+        kl_weight: Weight for the KL divergence loss term
+        prior_strength: Strength of the uniform prior
+        temperature: Temperature scaling parameter for calibration (default=1.0)
+        calibration_validation: Whether to use validation set for calibration
     """
     input_size: Optional[int]
     hidden_size: int
-    state_size: int = 32
-    num_state_layers: int = 2
+    state_size: int = 5 
+    num_state_layers: int = 1  
+    output_classes: int = 1
     dropout_rate: float = 0.2
     weight_decay: float = 0.01
     model_type: str = "bssnn"
     early_stopping_patience: int = 10
     early_stopping_min_delta: float = 1e-4
     consistency_weight: float = 0.1
-    output_classes: int = 2
     kl_weight: float = 0.01
     prior_strength: float = 0.5
+    temperature: float = 1.0
+    calibration_validation: bool = True
     sparse_threshold: float = 0.01
     use_sparse: bool = False
 
@@ -68,6 +63,8 @@ class ModelConfig:
         Raises:
             ValueError: If any parameter is invalid or inconsistent
         """
+        super_validations = super().__post_init__() if hasattr(super(), '__post_init__') else None
+        
         # Existing validations
         if self.input_size is not None and self.input_size <= 0:
             raise ValueError("input_size must be positive when specified")
@@ -93,8 +90,22 @@ class ModelConfig:
             raise ValueError("prior_strength must be between 0 and 1")
         if not (0 <= self.sparse_threshold <= 1):
             raise ValueError("sparse_threshold must be between 0 and 1")
+        if self.state_size <= 0:
+            raise ValueError("state_size must be positive")
+        if self.num_state_layers <= 0:
+            raise ValueError("num_state_layers must be positive")
+        if self.output_classes < 2:
+            raise ValueError("output_classes must be at least 2")
+        if not (0 <= self.temperature <= 100):
+            raise ValueError("temperature must be between 0 and 100")
         
         print("[bold green]Model configuration validated successfully[/bold green]")
+        
+        return super_validations if super_validations is not None else None
+    
+    def is_binary(self) -> bool:
+        """Check if the model is configured for binary classification."""
+        return self.output_classes == 2
     
     def adapt_to_data(self, n_features: int):
         """Adapt model configuration to data dimensions.
