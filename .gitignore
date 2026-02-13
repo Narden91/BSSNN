@@ -92,3 +92,4 @@ site/
 dist/
 build/
 *.pyc
+.agent/*
