@@ -1,0 +1,28 @@
+[project]
+name = "cissn"
+version = "0.1.0"
+description = "Conformally Calibrated Interpretable State-Space Networks (CISSN)"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "torch>=2.0.0",
+    "numpy>=1.24.0",
+    "scikit-learn>=1.2.0",
+    "matplotlib>=3.7.0",
+    "rich>=13.0.0",
+    "shap>=0.41.0",
+    "networkx>=2.8.0",
+    "numba>=0.59.0",
+]
+authors = [
+    { name = "Emanuele Nardone", email = "emanuele.nardone@unicas.it" }
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+dev-dependencies = [
+    "pytest",
+]
