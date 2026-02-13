@@ -1,21 +1,22 @@
 # README.md
 
-# Bayesian State-Space Neural Networks (BSSNN)
+# Conformally Calibrated Interpretable State-Space Networks (CISSN)
 
-BSSNN is a framework that combines Bayesian probability theory with neural networks to create interpretable and probabilistic models. By explicitly modeling joint and marginal probabilities, BSSNN provides insights into the relationships between features and predictions while maintaining the powerful representation capabilities of neural networks.
+CISSN (formerly BSSNN) is a framework that combines State-Space Models (SSMs) with neural networks to create interpretable and probabilistic time-series models. By explicitly modeling level, trend, seasonality, and residuals, CISSN provides deep insights into the drivers of predictions while maintaining the powerful representation capabilities of neural networks.
 
 ## Core Features
 
-The BSSNN framework offers several key capabilities that distinguish it from traditional neural networks. It provides explicit probability modeling through its dual-pathway architecture, allowing for both forward (Y|X) and reverse (X|Y) predictions. The framework includes comprehensive uncertainty quantification, making it particularly valuable for applications where understanding prediction confidence is crucial.
-
-The implementation includes built-in visualization tools for model interpretation and a flexible architecture that can be adapted for various types of data and prediction tasks. 
+*   **Interpretability**: Decomposes time series into Level, Trend, Seasonal, and Residual components.
+*   **Conformal Prediction**: Provides statistically valid prediction intervals using State-Conditional Conformal Prediction (SCCP).
+*   **Dual-Pathway**: Supports both forward (Y|X) and reverse (X|Y) predictions (in development).
+*   **Flexibility**: Built on PyTorch for easy extension and integration.
 
 ## Installation
 
-Install BSSNN using pip:
+Install CISSN using pip:
 
 ```bash
-pip install bssnn
+pip install cissn
 ```
 
 For development installation:
@@ -28,50 +29,37 @@ pip install -e .
 
 ## Quick Start
 
-Here's a simple example of using BSSNN for binary classification:
+Here's a simple example of using CISSN for forecasting:
 
 ```python
 import torch
-from bssnn.model import BSSNN
-from bssnn.training import BSSNNTrainer
-from bssnn.utils.data import prepare_data
+from cissn.models import DisentangledStateEncoder, ForecastHead
+from cissn.conformal import StateConditionalConformal
 
 # Initialize model
-model = BSSNN(input_size=10, hidden_size=64)
+model = DisentangledStateEncoder(input_dim=10, state_dim=4)
+head = ForecastHead(state_dim=4, horizon=5)
 
-# Create trainer
-trainer = BSSNNTrainer(model)
+# Forward pass
+x = torch.randn(1, 20, 10) # (batch, seq_len, input_dim)
+state = model(x)
+forecast = head(state)
 
-# Train model
-for epoch in range(num_epochs):
-    loss = trainer.train_epoch(X_train, y_train)
-    metrics = trainer.evaluate(X_val, y_val)
+print(f"Forecast: {forecast.shape}")
 ```
+
+See `examples/demo_cissn.py` for a complete example including conformal calibration.
 
 ## Documentation
 
 Detailed documentation is available in the docs directory:
 - [API Reference](docs/api.md): Complete API documentation
 - [Examples](docs/examples.md): Usage examples and tutorials
-- [Improvements](docs/improvements.md): Planned enhancements
 
 ## Contributing
 
-We welcome contributions to BSSNN. Please read our contributing guidelines before submitting pull requests.
+We welcome contributions to CISSN. Please read our contributing guidelines before submitting pull requests.
 
 ## License
 
 This project is licensed under the MIT License. See the LICENSE file for details.
-
-<!-- ## Citation
-
-If you use BSSNN in your research, please cite: -->
-
-<!-- ```bibtex
-@software{bssnn2024,
-  title = {BSSNN: Bayesian State-Space Neural Networks},
-  author = {Your Name},
-  year = {2024},
-  url = {https://github.com/yourusername/bssnn}
-}
-``` -->
