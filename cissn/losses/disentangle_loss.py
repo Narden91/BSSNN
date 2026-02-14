@@ -63,20 +63,32 @@ class DisentanglementLoss(nn.Module):
         # Diff across time
         diffs = states[:, 1:, :] - states[:, :-1, :]
         
-        # Level: slow varying -> minimize diff
+        # Level (dim 0): slow varying -> minimize diff
         level_loss = torch.mean(diffs[:, :, 0] ** 2)
         
-        # Trend: smooth -> minimize second derivative (diff of diffs)
+        # Trend (dim 1): smooth -> minimize second derivative (diff of diffs)
         if states.shape[1] > 2:
-            diff2 = diffs[:, 1:, 1] - diffs[:, :-1, 1]
-            trend_loss = torch.mean(diff2 ** 2)
+            diff2_trend = diffs[:, 1:, 1] - diffs[:, :-1, 1]
+            trend_loss = torch.mean(diff2_trend ** 2)
         else:
             trend_loss = torch.mean(diffs[:, :, 1] ** 2)
             
-        # Residual: minimize magnitude (sparsity)
-        residual_loss = torch.mean(states[:, :, 3] ** 2)
+        # Seasonal (dims 2, 3): 
+        # Ideally we want them to follow the rotation dynamics, but that's hard to enforce via loss 
+        # without knowing omega perfectly. The structural prior (A matrix) does most of the work.
+        # We can add a weak regularization to keep magnitude consistent or just ignore for now.
+        # Let's add a small penalty on magnitude changes to avoid explosion.
+        seasonal_mag = torch.norm(states[:, :, 2:4], dim=-1)
+        if states.shape[1] > 1:
+            mag_diff = seasonal_mag[:, 1:] - seasonal_mag[:, :-1]
+            seasonal_loss = torch.mean(mag_diff ** 2) * 0.1
+        else:
+            seasonal_loss = torch.tensor(0.0, device=states.device)
+
+        # Residual (dim 4): minimize magnitude (sparsity)
+        residual_loss = torch.mean(states[:, :, 4] ** 2)
         
-        return level_loss + trend_loss + residual_loss
+        return level_loss + trend_loss + seasonal_loss + residual_loss
 
     def forward(self, states: torch.Tensor) -> torch.Tensor:
         """

@@ -37,8 +37,8 @@ from cissn.models import DisentangledStateEncoder, ForecastHead
 from cissn.conformal import StateConditionalConformal
 
 # Initialize model
-model = DisentangledStateEncoder(input_dim=10, state_dim=4)
-head = ForecastHead(state_dim=4, horizon=5)
+model = DisentangledStateEncoder(input_dim=10, state_dim=5)
+head = ForecastHead(state_dim=5, horizon=5)
 
 # Forward pass
 x = torch.randn(1, 20, 10) # (batch, seq_len, input_dim)

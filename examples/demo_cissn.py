@@ -16,7 +16,7 @@ def test_cissn_flow():
     
     # Hyperparameters
     input_dim = 10
-    state_dim = 4
+    state_dim = 5 # Updated to 5
     hidden_dim = 32
     batch_size = 16
     seq_len = 20
@@ -62,11 +62,10 @@ def test_cissn_flow():
     # 5. Explainability
     # print("Generating explanations...")
     # explainer = ForecastExplainer(head) # TODO: Implement ForecastExplainer
-    # explanations = explainer.explain(final_state)
+    # contribs = head.get_contributions(final_state)
     # print(f"Explanation for first sample:")
-    # print(f"  Level: {explanations[0].level_contribution:.4f}")
-    # print(f"  Trend: {explanations[0].trend_contribution:.4f}")
-    # print(f"  Seasonal: {explanations[0].seasonal_contribution:.4f}")
+    # for k, v in contribs.items():
+    #     print(f"  {k}: {v[0].item():.4f}")
     
     print("\nSUCCESS: All components integrated and functioning.")
 

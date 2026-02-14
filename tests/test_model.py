@@ -11,7 +11,7 @@ from cissn.models import DisentangledStateEncoder, ForecastHead
 class TestCISSNModel(unittest.TestCase):
     def setUp(self):
         self.input_dim = 10
-        self.state_dim = 4
+        self.state_dim = 5
         self.hidden_dim = 32
         self.horizon = 5
         self.batch_size = 8
