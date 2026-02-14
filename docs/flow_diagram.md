@@ -1,79 +1,67 @@
 ```mermaid
 flowchart TB
-    subgraph Input["Input Layer 📥"]
-        X[("fa:fa-database Input Features")]
+    subgraph Input["Input Processing 📥"]
+        X[("fa:fa-database Input Sequence\n(Batch, Time, Features)")]
+        Proj[("fa:fa-arrow-right Input Projection\n(Linear + LayerNorm)")]
+        X --> Proj
     end
 
-    subgraph ParallelProcessing["Parallel Processing Paths 🔄"]
-        subgraph LinearPath["**Linear Pathway** ➡️"]
-            L1[("fa:fa-project-diagram Linear Transform\n(Weight Matrix Multiplication)")]
+    subgraph Encoder["Disentangled State Encoder 🔄"]
+        direction TB
+        
+        subgraph extraction["Innovation Extraction"]
+            E1[("Level Extractor")]
+            E2[("Trend Extractor")]
+            E3[("Seasonal Extractor")]
+            E4[("Residual Extractor")]
         end
         
-        subgraph NonlinearPath["**Nonlinear Pathway** 🔀"]
-            NL1[("fa:fa-brain Feature Extractor\n(Conv1D + Depthwise Separable Conv)")]
-            NL2[("fa:fa-wave-square Batch Normalization\n+ ELU Activation")]
-            NL3[("fa:fa-random Stochastic Dropout\n(p=0.5)")]
-            
-            NL1 --> NL2
-            NL2 --> NL3
+        subgraph transition["Structured Transition (A)"]
+            T1[("Level A≈1")]
+            T2[("Trend A≈1")]
+            T3[("Seasonal Rot(ω)")]
+            T4[("Residual A<1")]
         end
+        
+        subgraph correction["Non-Linear Correction"]
+            MLP[("Sparse MLP Correction")]
+        end
+        
+        Proj --> extraction
+        extraction --> transition
+        transition --> MLP
+        MLP --> State[("Latent State s_t\n(Level, Trend, Seas, Res)")]
     end
     
-    subgraph Combination["Feature Fusion Layer 🔀"]
-        G1[("fa:fa-code-branch Attention Gating\n(Context-Aware Weights)")]
-        M1[("fa:fa-object-ungroup Feature Mixing\n(Weighted Concatenation)")]
-        SK1[("fa:fa-fast-forward Skip Connection\n(Residual Addition)")]
+    subgraph Forecast["Forecast Head 🔮"]
+        Linear[("Linear Projection\n(Interpretable)")]
+        NonLinear[("Non-Linear Refinement\n(Small MLP)")]
+        Sum[("Sum")]
         
-        G1 -->|Adaptive Weights| M1
-        SK1 -->|Identity Mapping| M1
+        State --> Linear
+        State --> NonLinear
+        Linear --> Sum
+        NonLinear --> Sum
     end
     
-    subgraph Probability["Probability Space 📈"]
-        P1[("fa:fa-network-wired Joint Network\n(Linear + Tanh Activation)")]
-        P2[("fa:fa-calculator Logit Transformation")]
-        P3[("fa:fa-temperature-low Numerical Stabilization\n(LogSoftmax + Clipping)")]
+    subgraph Conformal["Uncertainty (SCCP) 📏"]
+        Cluster[("State Clustering\n(K-Means)")]
+        Quantile[("Cluster Quantiles")]
+        Intervals[("Prediction Intervals")]
         
-        P1 --> P2
-        P2 --> P3
-    end
-    
-    subgraph Loss["Optimization Objective 📉"]
-        L2[("fa:fa-fire Main Loss\nFocal BCE")]
-        L3[("fa:fa-snowflake Consistency Loss\nLabel Smoothing")]
-        L4[("fa:fa-scale-balanced KL Regularization\nPrior Distribution Matching")]
-        L5[("fa:fa-cube Total Loss\nWeighted Sum")] 
-        
-        L2 -->|α=0.8| L5
-        L3 -->|β=0.15| L5
-        L4 -->|γ=0.05| L5
+        State --> Cluster
+        Cluster --> Quantile
+        Sum --> Intervals
+        Quantile --> Intervals
     end
 
-    X --> LinearPath
-    X --> NonlinearPath
-    X --> SK1
+    classDef input fill:#e3f2fd,stroke:#1976d2,stroke-width:2px;
+    classDef encoder fill:#fff3e0,stroke:#e65100,stroke-width:2px;
+    classDef forecast fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px;
+    classDef conformal fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px;
     
-    LinearPath -->|Processed Features| G1
-    NL3 -->|High-Level Features| G1
-    
-    M1 -->|Fused Features| P1
-    
-    P3 -->|Stable Probabilities| L2
-    P3 -->|Calibrated Outputs| L3
-    P3 -->|Distribution| L4
-
-    classDef input fill:#e3f2fd,stroke:#1976d2,stroke-width:2px,color:#0d47a1;
-    classDef linear fill:#b3e5fc,stroke:#0288d1,stroke-width:2px;
-    classDef nonlinear fill:#c8e6c9,stroke:#388e3c,stroke-width:2px;
-    classDef fusion fill:#f0f4c3,stroke:#afb42b,stroke-width:2px;
-    classDef probability fill:#e1bee7,stroke:#8e24aa,stroke-width:2px;
-    classDef loss fill:#ffcdd2,stroke:#d32f2f,stroke-width:2px;
-    classDef connector fill:#ffffff,stroke:#9e9e9e,stroke-dasharray:5 5;
-    
-    class X input;
-    class LinearPath linear;
-    class NonlinearPath nonlinear;
-    class Combination fusion;
-    class Probability probability;
-    class Loss loss;
-    class G1,M1,SK1 connector;
+    class X,Proj input;
+    class E1,E2,E3,E4,T1,T2,T3,T4,MLP,State encoder;
+    class Linear,NonLinear,Sum forecast;
+    class Cluster,Quantile,Intervals conformal;
 ```

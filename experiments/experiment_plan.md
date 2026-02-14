@@ -47,7 +47,7 @@ We will report metrics in two tables:
 ## 4. Implementation Roadmap
 
 ### Phase 1: Data Pipeline (Days 1-2)
-- [ ] Implement `cissn.data.ETTComponent` to download and process ETT datasets.
+- [x] Implement `cissn.data.dataset.BaseETTDataset` to download and process ETT datasets.
 - [ ] Create `DataLoaders` consistent with Autoformer/Informer standards (70/10/20 splot).
 
 ### Phase 2: Benchmarking Engine (Days 2-3)

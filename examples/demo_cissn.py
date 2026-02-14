@@ -9,7 +9,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from cissn.models import DisentangledStateEncoder, ForecastHead
 from cissn.losses.disentangle_loss import DisentanglementLoss
 from cissn.conformal import StateConditionalConformal
-# from cissn.explanations import ForecastExplainer # Not implemented yet or missing
+from cissn.explanations import ForecastExplainer
 
 def test_cissn_flow():
     print("Initializing CISSN components...")
@@ -27,7 +27,7 @@ def test_cissn_flow():
     head = ForecastHead(state_dim, output_dim=1, horizon=horizon)
     loss_fn = DisentanglementLoss()
     conformal = StateConditionalConformal()
-    # explainer = ForecastExplainer(head)
+    explainer = ForecastExplainer(head)
     
     print("Models initialized successfully.")
     
@@ -60,12 +60,17 @@ def test_cissn_flow():
     print(f"Prediction Interval width: {(upper - lower).mean().item():.4f}")
     
     # 5. Explainability
-    # print("Generating explanations...")
-    # explainer = ForecastExplainer(head) # TODO: Implement ForecastExplainer
-    # contribs = head.get_contributions(final_state)
-    # print(f"Explanation for first sample:")
-    # for k, v in contribs.items():
-    #     print(f"  {k}: {v[0].item():.4f}")
+    print("Generating explanations...")
+    explanations = explainer.explain(final_state)
+    
+    print(f"Explanation for first sample:")
+    e = explanations[0]
+    print(f"  Level: {e.level_contribution:.4f}")
+    print(f"  Trend: {e.trend_contribution:.4f}")
+    print(f"  Seasonal: {e.seasonal_contribution:.4f}")
+    print(f"  Residual: {e.residual_contribution:.4f}")
+    print(f"  Bias: {e.bias:.4f}")
+    print(f"  Total (Linear): {e.total_prediction:.4f}")
     
     print("\nSUCCESS: All components integrated and functioning.")
 

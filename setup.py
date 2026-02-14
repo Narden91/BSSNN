@@ -18,7 +18,7 @@ setup(
     description="Conformally Calibrated Interpretable State-Space Networks (CISSN)",
     long_description=open("README.md").read(),
     long_description_content_type="text/markdown",
-    url="https://github.com/Narden91/BSSNN",
+    url="https://github.com/Narden91/CISSN",
     classifiers=[
         "Development Status :: 3 - Alpha",
         "Intended Audience :: Science/Research",
