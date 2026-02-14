@@ -13,8 +13,10 @@ import numpy as np
 
 if not os.path.exists('./data/ETT/ETTh1.csv'):
     print("Creating dummy ETTh1.csv for sanity check...")
-    dates = pd.date_range(start='2016-07-01', periods=1000, freq='H')
-    data = np.random.randn(1000, 7)
+    # standard ETT split requires at least ~15k points (12mo train + 4mo val + 4mo test)
+    # 12*30*24 = 8640. Total ~14400. Let's make 20000.
+    dates = pd.date_range(start='2016-07-01', periods=20000, freq='h')
+    data = np.random.randn(20000, 7)
     df = pd.DataFrame(data, columns=['HUFL','HULL','MUFL','MULL','LUFL','LULL','OT'])
     df['date'] = dates
     # move date to first col
@@ -22,7 +24,7 @@ if not os.path.exists('./data/ETT/ETTh1.csv'):
     df = df[cols]
     df.to_csv('./data/ETT/ETTh1.csv', index=False)
 
-# Run the command
-cmd = "python experiments/run_benchmark.py --data ETTh1 --train_epochs 2 --seq_len 24 --pred_len 24 --patience 1 --batch_size 16"
+# Run the command with PYTHONPATH
+cmd = "set PYTHONPATH=. && python experiments/run_benchmark.py --data ETTh1 --train_epochs 2 --seq_len 24 --label_len 12 --pred_len 24 --patience 1 --batch_size 16"
 print(f"Running: {cmd}")
 os.system(cmd)

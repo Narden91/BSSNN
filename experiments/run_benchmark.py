@@ -91,6 +91,13 @@ class Experiment:
                 # Forecast
                 outputs = self.head(final_state) # (B, Pred, Out)
                 
+                # Slicing for loss
+                # batch_y shape: (B, Label+Pred, Out)
+                # We only want the last Pred_len steps
+                f_dim = -1 if self.args.features == 'MS' else 0
+                outputs = outputs[:, -self.args.pred_len:, f_dim:]
+                batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
+                
                 # Losses
                 pred_loss = criterion(outputs, batch_y)
                 dis_loss = disentangle_criterion(states)
@@ -147,6 +154,10 @@ class Experiment:
                 final_state = self.model(batch_x)
                 outputs = self.head(final_state)
                 
+                f_dim = -1 if self.args.features == 'MS' else 0
+                outputs = outputs[:, -self.args.pred_len:, f_dim:]
+                batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
+                
                 loss = criterion(outputs, batch_y)
                 total_loss.append(loss.item())
         
@@ -178,6 +189,10 @@ class Experiment:
                 
                 final_state = self.model(batch_x)
                 outputs = self.head(final_state)
+                
+                f_dim = -1 if self.args.features == 'MS' else 0
+                outputs = outputs[:, -self.args.pred_len:, f_dim:]
+                batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
                 
                 preds.append(outputs.detach().cpu().numpy())
                 trues.append(batch_y.detach().cpu().numpy())
@@ -217,7 +232,7 @@ class EarlyStopping:
         self.counter = 0
         self.best_score = None
         self.early_stop = False
-        self.val_loss_min = np.Inf
+        self.val_loss_min = np.inf
         self.delta = delta
 
     def __call__(self, val_loss, model, head, path):
