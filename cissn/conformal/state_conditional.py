@@ -35,6 +35,16 @@ class StateConditionalConformal:
         if isinstance(residuals, torch.Tensor):
             residuals = residuals.detach().cpu().numpy()
             
+        # Ensure residuals are 1D
+        if residuals.ndim > 1:
+            if residuals.shape[1] == 1:
+                residuals = residuals.squeeze()
+            else:
+                # If multi-dimensional, we likely want max residual across dimensions or handle separately
+                # For this implementation, we assume max absolute error across dims for conservative coverage or require 1D
+                print("Warning: Residuals are multi-dimensional. Taking max across last dim.")
+                residuals = np.max(residuals, axis=-1)
+
         # 1. Cluster states
         self.kmeans.fit(states)
         cluster_labels = self.kmeans.predict(states)
@@ -86,7 +96,23 @@ class StateConditionalConformal:
         
         # Retrieve quantiles
         q_values = np.array([self.quantiles[k] for k in cluster_labels])
-        q_tensor = torch.tensor(q_values, device=point_forecasts.device, dtype=point_forecasts.dtype).unsqueeze(-1)
+        
+        # q_values is (n_samples,), point_forecasts is (n_samples, output_dim)
+        # Properly broadcast: (n_samples, 1) to match (n_samples, output_dim)
+        q_tensor = torch.tensor(q_values, device=point_forecasts.device, dtype=point_forecasts.dtype)
+        
+        if q_tensor.ndim == 1:
+            q_tensor = q_tensor.unsqueeze(-1)
+            
+        # If point_forecasts has horizon dim (batch, horizon, output), we might need more alignment
+        # The demo uses (batch, horizon, output) or (batch, output). 
+        # State describes the *current* context. Usually we predict for next horizon.
+        # If state corresponds to the *start* of forecasting, one cluster per sample.
+        # q_tensor: (batch, 1). forecasts: (batch, horizon, output).
+        # We need (batch, 1, 1) to broadcast over horizon and output.
+        
+        while q_tensor.ndim < point_forecasts.ndim:
+            q_tensor = q_tensor.unsqueeze(-1)
         
         lower = point_forecasts - q_tensor
         upper = point_forecasts + q_tensor

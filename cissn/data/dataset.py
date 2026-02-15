@@ -13,7 +13,7 @@ class BaseETTDataset(Dataset):
     """
     def __init__(self, root_path: str, flag: str = 'train', size: Optional[List[int]] = None,
                  features: str = 'S', data_path: str = 'ETTh1.csv',
-                 target: str = 'OT', scale: bool = True):
+                 target: str = 'OT', scale: bool = True, **kwargs):
         # size [seq_len, label_len, pred_len]
         if size is None:
             self.seq_len = 24 * 4 * 4
@@ -34,14 +34,21 @@ class BaseETTDataset(Dataset):
         self.scale = scale
         self.root_path = root_path
         self.data_path = data_path
+        self.kwargs = kwargs # Store extra args for custom overrides
         self.__read_data__()
 
     def __read_data__(self):
         self.scaler = StandardScaler()
         df_raw = pd.read_csv(os.path.join(self.root_path, self.data_path))
 
-        # Define borders based on dataset type (override in subclasses if needed)
-        border1s, border2s = self._get_borders()
+        # Define borders based on dataset type
+        # Allow overriding borders via kwargs for custom splits
+        if 'borders' in self.kwargs:
+             # Expects list of [train_start, val_start, test_start, test_end] or similar structure matched to subclasses
+             # But easier: expects tuple (border1s, border2s)
+             border1s, border2s = self.kwargs['borders']
+        else:
+            border1s, border2s = self._get_borders()
         
         border1 = border1s[self.set_type]
         border2 = border2s[self.set_type]
@@ -123,8 +130,8 @@ class Dataset_ETT_hour(BaseETTDataset):
 class Dataset_ETT_minute(BaseETTDataset):
     def __init__(self, root_path: str, flag: str = 'train', size: Optional[List[int]] = None,
                  features: str = 'S', data_path: str = 'ETTm1.csv',
-                 target: str = 'OT', scale: bool = True):
-        super().__init__(root_path, flag, size, features, data_path, target, scale)
+                 target: str = 'OT', scale: bool = True, **kwargs):
+        super().__init__(root_path, flag, size, features, data_path, target, scale, **kwargs)
 
     def _get_borders(self):
         # 12 months train, 4 months val, 4 months test (minute data - 15min intervals usually for ETTm)

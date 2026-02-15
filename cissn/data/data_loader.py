@@ -1,7 +1,26 @@
 from torch.utils.data import DataLoader
 from cissn.data.dataset import Dataset_ETT_hour, Dataset_ETT_minute
+from typing import Tuple, Union, Any, Dict
+from types import SimpleNamespace
 
-def get_data_loader(args, flag):
+def get_data_loader(args: Union[SimpleNamespace, Dict[str, Any]], flag: str) -> Tuple[Any, DataLoader]:
+    """
+    Get data loader for ETT datasets.
+    
+    Args:
+        args: Configuration object (Namespace or dict) containing:
+              data, root_path, data_path, seq_len, label_len, pred_len,
+              features, target, batch_size, freq, num_workers
+        flag: Split flag ('train', 'test', 'pred')
+        
+    Returns:
+        dataset: The created dataset object
+        data_loader: The PyTorch DataLoader
+    """
+    # Normalize args to object access if dict
+    if isinstance(args, dict):
+        args = SimpleNamespace(**args)
+        
     data_dict = {
         'ETTh1': Dataset_ETT_hour,
         'ETTh2': Dataset_ETT_hour,
